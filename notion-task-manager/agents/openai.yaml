@@ -1,0 +1,4 @@
+interface:
+  display_name: "Notion Task Manager"
+  short_description: "Record tasks into yearly Notion tables with month views"
+  default_prompt: "Use $notion-task-manager to record tasks into yearly Notion tables, organize them by creation month, and remind me of unfinished or overdue work."
