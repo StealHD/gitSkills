@@ -8,6 +8,7 @@ This published reference intentionally ships without personal Notion URLs, data 
 - Archive parent page: `<configure: Notion parent page title>`
 - Parent URL: `<configure: Notion parent page URL>`
 - Default contact (`对接人`): `Me`
+- Query mode: `search_first`
 - Active year database: `<configure: YYYY>`
 - Active year database URL: `<configure: Notion year database URL>`
 - Active year data source: `<configure: collection://...>`
@@ -140,4 +141,27 @@ Calendar semantics:
 - `日历` is the creation calendar. It should show every task because every task must have `创建时间`.
 - `截止日历` is the deadline calendar. It only shows tasks with `截止日期`; tasks without a deadline being absent here is expected.
 
-If `query_data_sources` is available, use SQL against the yearly data source URL. If it is unavailable in the current runtime, use `search` with `data_source_url`, fetch candidate pages, and filter by the page properties.
+Default query mode is `search_first`: use Notion search with `data_source_url`, fetch candidate pages, and filter by page properties. Use SQL only when `query_mode` is changed to `sql_first`, when the user explicitly asks for a full exact database query, or after confirming the SQL tool is available.
+
+## Todo Query Runbook
+
+Use this runbook by default when the user asks for unfinished tasks.
+
+1. Fetch the yearly database to confirm the data source URL and live schema.
+2. Search within the configured data source with several broad discovery queries, not just one:
+   - `记录`
+   - `待办`
+   - `跟进`
+   - `处理`
+   - `确认`
+   - `未开始`
+   - `进行中`
+   - the configured default contact
+   - exact keywords from the user's current request
+3. Deduplicate hits by page URL/page ID.
+4. Fetch every candidate page and read properties.
+5. Exclude only `状态 = 已完成`. Include `未开始`, `进行中`, empty status, and unknown status.
+6. Classify by `截止日期` into overdue, due within 7 days, and no deadline.
+7. Sort by deadline ascending, then priority `高`/`中`/`低`, then `创建时间` or `createdTime` descending.
+8. In the answer, include the query path used. For the default path, append: `本次使用 search_first（搜索+fetch）查询；如果需要全量精确结果，需要启用可用的 Notion SQL 查询。`
+9. Do not call SQL in the default path. SQL is optional and exact, but may be unavailable in the current runtime.

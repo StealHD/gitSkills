@@ -112,15 +112,29 @@ Use this default page body shape:
 
 When listing tasks or reminding the user:
 
-1. Prefer `query_data_sources` with SQL when available. Filter out `状态 = '已完成'`.
-2. If data-source querying is unavailable, search within the configured data source, fetch likely task pages, and filter by fetched page properties.
-3. Classify unfinished tasks into:
+1. Fetch the configured yearly database first and confirm the live schema still has the expected task fields.
+2. Use the configured `query_mode`; default is `search_first` because the current Notion SQL tool may be unavailable in some runtimes.
+3. In `search_first`, do not call SQL before searching. Run the structured search path directly:
+   - Search within the configured data source with multiple broad task-discovery queries: `记录`, `待办`, `跟进`, `处理`, `确认`, `未开始`, `进行中`, the configured default contact, and any exact keywords from the user's request.
+   - Use `page_size` as high as practical within tool limits, keep highlights short, and always pass `data_source_url`.
+   - Deduplicate results by page URL or page ID.
+   - Fetch every candidate page returned by search before deciding whether it is a task.
+4. Use SQL only when `query_mode = sql_first`, when the user explicitly asks for an exact/full database query, or when search results look suspiciously empty and the SQL tool is known to work. SQL must filter out `状态 = '已完成'`.
+5. Filter fetched candidates by properties:
+   - Exclude only pages whose `状态` is exactly `已完成`.
+   - Include `未开始`, `进行中`, empty status, and unknown status as unfinished candidates.
+   - If a required property is missing because the user's schema differs, keep the page and mark the missing field as `未配置` rather than dropping it.
+6. Classify unfinished tasks into:
    - `已逾期`: deadline date is before today's local date and status is not `已完成`.
    - `即将到期`: deadline is today or within the next 7 days.
    - `无截止日期`: unfinished tasks without `截止日期`.
-4. Sort overdue and due-soon tasks by `截止日期` ascending, then priority `高`, `中`, `低`, then `创建时间`/Notion system `createdTime`.
-5. Keep the reminder concise. Include task name, status, deadline, priority, and creation time/month when useful.
-6. Deadline reminders must use the `截止日期` property, not the calendar view. Tasks without `截止日期` appear in `日历` by `创建时间` but do not appear in `截止日历`.
+7. Sort overdue and due-soon tasks by `截止日期` ascending, then priority `高`, `中`, `低`, then `创建时间`/Notion system `createdTime`.
+8. Keep the reminder concise. Include task name, status, deadline, priority, owner, creation time, and URL when useful.
+9. State query completeness:
+   - If `search_first` was used, say `本次使用 search_first（搜索+fetch）查询；如果需要全量精确结果，需要启用可用的 Notion SQL 查询。`
+   - If SQL succeeds, say nothing extra unless the user asked how the query was done.
+   - If search finds no candidates, say that the result may be incomplete and suggest checking/repairing the data source query path.
+10. Deadline reminders must use the `截止日期` property, not the calendar view. Tasks without `截止日期` appear in `日历` by `创建时间` but do not appear in `截止日历`.
 
 Example SQL shape:
 
