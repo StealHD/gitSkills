@@ -51,8 +51,12 @@ notes = "Baseline imported after manual publication. Release control must not ed
 
 [skills."codex-daily-report"]
 path = "skills/codex-daily-report"
-version = "0.1.0"
-status = "draft"
+version = "0.1.1"
+status = "published"
 public = true
-release_tag = "codex-daily-report/v0.1.0"
-notes = "Pending first controlled release."
+package_formats = [
+  "tar.gz",
+  "zip",
+]
+release_tag = "codex-daily-report/v0.1.1"
+notes = "Packaging-only release adding a zip artifact. Release control must not edit the skill files."
