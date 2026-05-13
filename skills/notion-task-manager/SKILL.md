@@ -56,7 +56,7 @@ When recording a task:
 
 1. Extract a concise `任务名称` from the request. Ask only if there is no recognizable task.
 2. Parse deadline language into an ISO date or datetime. If no deadline is present, omit `截止日期`.
-3. Default `状态` to `未开始`. Use `进行中` only if the user says they already started. Use `已完成` only when the user explicitly says the item is done, completed, closed, archived, or already handled; never infer completion from the fact that the note was recorded successfully.
+3. Default `状态` to `未开始`. Use `进行中` only if the user says the work is actively being handled. Use `待确认` when the main action is done but the result still needs verification, observation, recurrence checking, external confirmation, or final acceptance. Use `已完成` only when the user explicitly says the item is done, completed, closed, archived, or already handled; never infer completion from the fact that the note was recorded successfully.
 4. Default `优先级` to `中`. Use `高` for urgent, important, today/tomorrow deadlines, or explicit urgency. Use `低` for low-priority/backlog language.
 5. Set `对接人` from explicit user wording such as "对接人是 X", "给 X", "让 X 跟进", or "找 X". If no contact is specified, use `default_contact` from the local config.
 6. Set `创建时间` to the current local datetime; this field chooses the yearly database, drives monthly views, and makes every task appear in `日历`.
@@ -123,14 +123,14 @@ When listing tasks or reminding the user:
 3. Use the configured `query_mode`; default is `search_first` because the current Notion SQL tool may be unavailable in some runtimes.
 4. In `search_first`, do not call SQL before searching. Run the structured search path directly:
    - Search within the configured data source with the small default query set first: `记录`, `待办`, `跟进`, plus any exact keywords from the user's request.
-   - If the default query set returns no useful candidates, expand once with `处理`, `确认`, `未开始`, `进行中`, and the configured default contact.
+   - If the default query set returns no useful candidates, expand once with `处理`, `确认`, `待确认`, `未开始`, `进行中`, and the configured default contact.
    - Use `page_size` as high as practical within tool limits, set `max_highlight_length` to `0`, and always pass the configured data source URL.
    - Deduplicate results by page URL or page ID.
    - Fetch only deduplicated candidate pages needed to read task properties. The current Notion fetch tool may return page body content together with properties; for normal todo lists, read only the `<properties>` block and ignore `<content>`.
 5. Use SQL only when `query_mode = sql_first`, when the user explicitly asks for an exact/full database query, or when search results look suspiciously empty and the SQL tool is known to work. SQL must filter out `状态 = '已完成'`.
 6. Filter fetched candidates by properties:
    - Exclude only pages whose `状态` is exactly `已完成`.
-   - Include `未开始`, `进行中`, empty status, and unknown status as unfinished candidates.
+   - Include `未开始`, `进行中`, `待确认`, empty status, and unknown status as unfinished candidates.
    - If a required property is missing because the user's schema differs, keep the page and mark the missing field as `未配置` rather than dropping it.
 7. Classify unfinished tasks into:
    - `已逾期`: deadline date is before today's local date and status is not `已完成`.
@@ -214,7 +214,7 @@ Deprecated targets, if any, belong in `references/notion-config.local.yaml`; do 
 
 ## Status Updates
 
-When the user says a task is done, update only the matching task's `状态` to `已完成`. If multiple tasks match, show the candidates and ask which one to update. Never delete tasks unless the user explicitly asks.
+When the user says a task is done, update only the matching task's `状态` to `已完成`. When the user says the action is complete but still needs validation, observation, recurrence monitoring, or someone else's confirmation, update the matching task's `状态` to `待确认`. If multiple tasks match, show the candidates and ask which one to update. Never delete tasks unless the user explicitly asks.
 
 ## Response Style
 

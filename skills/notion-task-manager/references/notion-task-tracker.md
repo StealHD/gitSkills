@@ -68,7 +68,7 @@ When debugging or evolving this skill, every live Notion behavior or schema chan
 ## Editable Properties
 
 - `任务名称`: title, required.
-- `状态`: select. Allowed values: `未开始`, `进行中`, `已完成`. Default new records to `未开始`; set `已完成` only when the user explicitly says the item is complete, done, archived, or already handled. Saving a note into Notion does not mean the task itself is complete.
+- `状态`: select. Allowed values: `未开始`, `进行中`, `待确认`, `已完成`. Default new records to `未开始`; use `进行中` only for actively handled work; use `待确认` when the main action is done but the result still needs verification, observation, recurrence checking, external confirmation, or final acceptance; set `已完成` only when the user explicitly says the item is complete, done, archived, or already handled. Saving a note into Notion does not mean the task itself is complete.
 - `对接人`: text. Default to `default_contact` from local config unless the user explicitly specifies another contact.
 - `截止日期`: date. Write as `date:截止日期:start`, optional `date:截止日期:end`, and `date:截止日期:is_datetime`.
 - `优先级`: select. Allowed values: `高`, `中`, `低`.
@@ -152,12 +152,13 @@ Use this runbook by default when the user asks for unfinished tasks.
 4. If the default query set returns no useful candidates, expand once with:
    - `处理`
    - `确认`
+   - `待确认`
    - `未开始`
    - `进行中`
    - configured default contact
 5. Deduplicate hits by page URL/page ID.
 6. Fetch candidate pages only as needed to read properties. Do not use or summarize the page body in the todo-list answer.
-7. Exclude only `状态 = 已完成`. Include `未开始`, `进行中`, empty status, and unknown status.
+7. Exclude only `状态 = 已完成`. Include `未开始`, `进行中`, `待确认`, empty status, and unknown status.
 8. Classify by `截止日期` into overdue, due within 7 days, and no deadline.
 9. Sort by deadline ascending, then priority `高`/`中`/`低`, then `创建时间` or `createdTime` descending.
 10. Output only:

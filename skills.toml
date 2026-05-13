@@ -52,15 +52,15 @@ forbidden_init_patterns = [
 [skills."notion-task-manager"]
 path = "skills/notion-task-manager"
 maintenance_path = "/Users/stealmac/.codex/skills/notion-task-manager"
-version = "0.1.0"
-status = "manual-published"
+version = "0.1.1"
+status = "published"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "notion-task-manager/v0.1.0"
-notes = "Baseline imported after manual publication. Release control must not edit the skill files."
+release_tag = "notion-task-manager/v0.1.1"
+notes = "Patch release synchronized from the deployed maintenance version."
 
 [skills."codex-daily-report"]
 path = "skills/codex-daily-report"
