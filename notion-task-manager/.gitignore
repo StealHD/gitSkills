@@ -1,1 +1,9 @@
+*.local.yaml
+*.local.yml
+*.local.json
 .DS_Store
+__pycache__/
+*.pyc
+*.log
+tmp/
+exports/

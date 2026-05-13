@@ -1,59 +1,13 @@
 # Notion Task Tracker Reference
 
-This published reference intentionally ships without personal Notion URLs, data source IDs, view IDs, or owner names. Configure it during first use.
+Concrete Notion page URLs, collection IDs, view IDs, default contact, active year, and query mode live in `references/notion-config.local.yaml`. Keep `references/notion-config.example.yaml` as the public template.
 
-## Target
-
-- Configured: `false`
-- Archive parent page: `<configure: Notion parent page title>`
-- Parent URL: `<configure: Notion parent page URL>`
-- Default contact (`对接人`): `Me`
-- Query mode: `search_first`
-- Active year database: `<configure: YYYY>`
-- Active year database URL: `<configure: Notion year database URL>`
-- Active year data source: `<configure: collection://...>`
-- Month views: `<configure after creating/reusing month views>`
-- `所有任务`: `<configure: view://...>`
-- `按状态`: `<configure: view://...>`
-- `日历`: `<configure: view://...>`
-- `截止日历`: `<configure: view://...>`
-- `清单`: `<configure: view://...>`
-
-If `Configured` is `false` or any required URL/ID still contains `<configure: ...>`, run first-use setup before recording tasks.
-
-## First Use Configuration
-
-Ask the user for:
-
-- Parent page URL: a normal Notion page that will contain yearly task databases.
-- Default contact: the text value to write to `对接人` when a task does not name an owner. Use `Me` if the user does not specify one.
-
-Suggested prompt:
-
-```text
-Use $notion-task-manager first use setup.
-Notion parent page URL: <your Notion page URL>
-Default contact: <your name or owner label>
-```
-
-Setup workflow:
-
-1. Fetch the parent page URL.
-2. Create or reuse the yearly database named `YYYY` under that parent page.
-3. Ensure the schema in `Editable Properties` exists.
-4. Create or reuse the month view for the current month.
-5. Create or reuse standard views: `所有任务`, `按状态`, `日历`, `截止日历`, and `清单`.
-6. Update this reference with `Configured: true`, the parent page title/URL, default contact, active year database URL, data source URL, and view IDs.
-7. Run the skill validator after editing this file.
-
-Do not commit a configured copy containing private Notion URLs or IDs to a public repository.
-
-## Layout Model
+## Setup Model
 
 Use one database per creation year:
 
 ```text
-<configured parent page>
+<parent_page_name>
 └── YYYY          (database/table)
     ├── MM        (month view)
     ├── 所有任务
@@ -66,24 +20,56 @@ Use one database per creation year:
 For a task created at `2026-05-08T15:38:43+08:00`:
 
 - year database: `2026`
+- data source: configured in `notion-config.local.yaml`
 - month view: `05`
 
 Month views are named `MM`, and they filter by `创建时间` from the first day of that month to the first day of the next month.
 
+## First Use Configuration
+
+For a new user or workspace, configure:
+
+- Parent page URL: the normal Notion page that will contain yearly databases.
+- Default contact: the text value to write to `对接人` when a task does not name an owner.
+- Active yearly database URL and data source ID for the current year.
+- Month view IDs and standard view IDs after creating/updating views.
+
+After configuration, update `references/notion-config.local.yaml` and run the skill validator. Do not commit the local config.
+
+## Config File Rules
+
+Use `references/notion-config.local.yaml` as the runtime source of truth for:
+
+- `timezone`
+- `parent_page_name`
+- `parent_page_url`
+- `default_contact`
+- `query_mode`
+- `active_year`
+- `year_databases[YYYY].database_url`
+- `year_databases[YYYY].data_source_url`
+- `year_databases[YYYY].data_source_id`
+- `year_databases[YYYY].views`
+- `deprecated_targets`
+
+Use `references/notion-config.example.yaml` only as a placeholder template for new users and public releases.
+
+Do not duplicate concrete Notion URLs, collection IDs, view IDs, owner names, or deprecated personal target IDs in this reference. If the live Notion structure changes, update the local config for IDs and this reference only for reusable workflow/schema behavior.
+
 ## Maintenance Sync Rule
 
-When debugging or evolving this skill, every live Notion change must be reflected in the skill files before finishing:
+When debugging or evolving this skill, every live Notion behavior or schema change must be reflected in the skill files before finishing:
 
 - Put reusable workflow behavior in `SKILL.md`.
-- Put concrete Notion database IDs, data source IDs, fields, allowed values, and view IDs in this reference for local configured copies.
-- For a public release, replace private URLs/IDs with placeholders before publishing.
+- Put generic field rules, allowed values, and view rules in this reference.
+- Put concrete Notion IDs, URLs, view IDs, active year, and default contact in `references/notion-config.local.yaml`.
 - Run `quick_validate.py` after edits.
 
 ## Editable Properties
 
 - `任务名称`: title, required.
-- `状态`: select. Allowed values: `未开始`, `进行中`, `已完成`.
-- `对接人`: text. Default to the configured default contact unless the user explicitly specifies another contact.
+- `状态`: select. Allowed values: `未开始`, `进行中`, `已完成`. Default new records to `未开始`; set `已完成` only when the user explicitly says the item is complete, done, archived, or already handled. Saving a note into Notion does not mean the task itself is complete.
+- `对接人`: text. Default to `default_contact` from local config unless the user explicitly specifies another contact.
 - `截止日期`: date. Write as `date:截止日期:start`, optional `date:截止日期:end`, and `date:截止日期:is_datetime`.
 - `优先级`: select. Allowed values: `高`, `中`, `低`.
 - `创建时间`: date. Write on every new task as `date:创建时间:start` and `date:创建时间:is_datetime`.
@@ -102,7 +88,7 @@ Every new task should include:
 
 ```json
 {
-  "对接人": "<configured default contact>",
+  "对接人": "<default_contact>",
   "date:创建时间:start": "2026-05-08T15:38:43+08:00",
   "date:创建时间:is_datetime": 1
 }
@@ -118,7 +104,7 @@ Also add page body content rather than leaving the task page blank. Default sect
 
 If there is no relevant context for background, do not invent it. Add the `待补充` line in the page body and mention in the final reply that the user can provide background later.
 
-For operational tasks such as Redis cleanup, include safety checks such as confirming environment, avoiding risky broad commands, recording counts, and verifying after execution.
+For operational tasks such as database changes, data cleanup, or production maintenance, include safety checks such as confirming environment, avoiding risky broad commands, recording counts, and verifying after execution.
 
 ## View Rules
 
@@ -141,27 +127,49 @@ Calendar semantics:
 - `日历` is the creation calendar. It should show every task because every task must have `创建时间`.
 - `截止日历` is the deadline calendar. It only shows tasks with `截止日期`; tasks without a deadline being absent here is expected.
 
-Default query mode is `search_first`: use Notion search with `data_source_url`, fetch candidate pages, and filter by page properties. Use SQL only when `query_mode` is changed to `sql_first`, when the user explicitly asks for a full exact database query, or after confirming the SQL tool is available.
+Default query mode is `search_first`: use Notion search with the configured data source URL, fetch candidate pages, and filter by page properties. Use SQL only when `query_mode` is changed to `sql_first`, when the user explicitly asks for a full exact database query, or after confirming the SQL tool is available.
+
+For todo summaries, optimize for low token use:
+
+- Fetch the configured data source directly to confirm schema. Do not fetch the full yearly database unless data source discovery or view debugging is needed.
+- Search with `max_highlight_length: 0`.
+- Fetch candidate pages only to read `<properties>`. Ignore `<content>` unless the user asks for details about a specific task.
+- Default answers should include only task title, status, priority, owner, deadline, and creation time.
+- Keep a session-local task detail cache with title, page ID/URL, and last fetched properties so follow-up detail questions can fetch exactly one page.
+- If a fresh cache already exists in the current conversation and no task has changed, answer repeated todo-list questions from cache without calling Notion.
 
 ## Todo Query Runbook
 
 Use this runbook by default when the user asks for unfinished tasks.
 
-1. Fetch the yearly database to confirm the data source URL and live schema.
-2. Search within the configured data source with several broad discovery queries, not just one:
+1. If a fresh task summary cache exists in the current conversation and no task update happened after it was created, answer from the cached properties and skip Notion calls.
+2. Fetch the configured data source to confirm the live schema.
+3. Search within the configured data source with the small default query set:
    - `记录`
    - `待办`
    - `跟进`
+   - exact keywords from the user's current request
+4. If the default query set returns no useful candidates, expand once with:
    - `处理`
    - `确认`
    - `未开始`
    - `进行中`
-   - the configured default contact
-   - exact keywords from the user's current request
-3. Deduplicate hits by page URL/page ID.
-4. Fetch every candidate page and read properties.
-5. Exclude only `状态 = 已完成`. Include `未开始`, `进行中`, empty status, and unknown status.
-6. Classify by `截止日期` into overdue, due within 7 days, and no deadline.
-7. Sort by deadline ascending, then priority `高`/`中`/`低`, then `创建时间` or `createdTime` descending.
-8. In the answer, include the query path used. For the default path, append: `本次使用 search_first（搜索+fetch）查询；如果需要全量精确结果，需要启用可用的 Notion SQL 查询。`
-9. Do not call SQL in the default path. SQL is optional and exact, but may be unavailable in the current runtime.
+   - configured default contact
+5. Deduplicate hits by page URL/page ID.
+6. Fetch candidate pages only as needed to read properties. Do not use or summarize the page body in the todo-list answer.
+7. Exclude only `状态 = 已完成`. Include `未开始`, `进行中`, empty status, and unknown status.
+8. Classify by `截止日期` into overdue, due within 7 days, and no deadline.
+9. Sort by deadline ascending, then priority `高`/`中`/`低`, then `创建时间` or `createdTime` descending.
+10. Output only:
+    - task title
+    - `状态`
+    - `优先级`
+    - `对接人`
+    - `截止日期`
+    - `创建时间`
+11. Do not include query path, SQL limitation text, URLs, page content, token/time cost, or diagnostics unless the user asks.
+12. Do not call SQL in the default path. SQL is optional and exact, but may be unavailable in this runtime.
+
+## Deprecated Targets
+
+Deprecated or deleted Notion targets belong in `references/notion-config.local.yaml`, not in public skill files.
