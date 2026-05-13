@@ -6,6 +6,7 @@ package_formats = [
 package_allowlist = [
   "SKILL.md",
   "agents/",
+  "config/",
   "references/",
   "scripts/",
   "assets/",
@@ -74,3 +75,16 @@ package_formats = [
 ]
 release_tag = "codex-daily-report/v0.1.1"
 notes = "Packaging-only release adding a zip artifact. Release control must not edit the skill files."
+
+[skills."dbc-skill"]
+path = "skills/dbc-skill"
+maintenance_path = "/Users/stealmac/.codex/skills/dbc-skill"
+version = "0.1.0"
+status = "published"
+public = true
+package_formats = [
+  "tar.gz",
+  "zip",
+]
+release_tag = "dbc-skill/v0.1.0"
+notes = "Initial release synchronized from the deployed maintenance version. Local API target config is excluded."

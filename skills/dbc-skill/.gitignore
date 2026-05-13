@@ -1,0 +1,11 @@
+config/api-targets.local.json
+*.local.json
+*.local.yaml
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+reports/
+sql/
+html/
+instances.json

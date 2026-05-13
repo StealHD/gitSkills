@@ -1,0 +1,9 @@
+{
+  "default_target": "dbc-pod",
+  "targets": {
+    "dbc-pod": {
+      "base_url": "http://<backend-host>:<port>",
+      "description": "Configured runtime backend for dbc-skill."
+    }
+  }
+}
