@@ -2,7 +2,46 @@
 
 Reusable Codex skills published for installation and reuse.
 
+## Repository Layout
+
+Each skill lives in its own directory under `skills/`. The repository root is reserved for release-control files, CI, and shared packaging scripts.
+
+```text
+.
++-- README.md
++-- skills.toml
++-- scripts/
+|   +-- skillctl
++-- .github/
+|   +-- workflows/
++-- skills/
+    +-- codex-daily-report/
+    +-- notion-task-manager/
+```
+
+Do not put generated reports, local configs, webhook URLs, tokens, or user-specific IDs in skill source directories.
+
 ## Available Skills
+
+### codex-daily-report
+
+`codex-daily-report` generates concise Chinese daily, weekly, and monthly work reports from local Codex sessions.
+
+It supports:
+
+- China workday gating and automation schedule decisions.
+- Daily reports on China workdays.
+- Weekly reports on Sunday.
+- Monthly reports on the last China workday.
+- Dependency-ordered daily -> weekly/monthly generation.
+- Monthly Markdown report records.
+- WeCom bot sending through runtime configuration.
+
+Skill path:
+
+```text
+skills/codex-daily-report/
+```
 
 ### notion-task-manager
 
@@ -13,133 +52,63 @@ It supports:
 - Recording follow-up tasks into Notion.
 - One Notion database per year.
 - Month views filtered by creation time.
-- Standard task views: all tasks, by status, created-date calendar, due-date calendar, and checklist.
-- Unfinished task summaries using a search-first query flow.
-- Deadline reminders from the task `Due Date` field.
-- A local configuration file so public skill files never contain private Notion URLs or IDs.
+- Standard task views.
+- Unfinished task summaries.
+- Deadline reminders.
+- Local configuration so public skill files never contain private Notion URLs or IDs.
 
 Skill path:
 
 ```text
-notion-task-manager/
+skills/notion-task-manager/
 ```
 
 ## Install
 
-In Codex, ask the skill installer to install from this repository path:
+Install a single skill from its directory path:
 
 ```text
-Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/notion-task-manager
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/codex-daily-report
 ```
 
-Or install manually by copying the skill folder into your Codex skills directory:
+```text
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/notion-task-manager
+```
+
+Or install manually by copying one skill folder into your Codex skills directory:
 
 ```text
+~/.codex/skills/codex-daily-report
 ~/.codex/skills/notion-task-manager
 ```
 
 ## First Use
 
-After installing `notion-task-manager`, configure a local Notion target.
-
-The public template is:
+Read each skill's setup reference before enabling automation:
 
 ```text
-notion-task-manager/references/notion-config.example.yaml
+skills/codex-daily-report/references/initial-setup.md
+skills/notion-task-manager/references/notion-config.example.yaml
 ```
 
-Create a private local config next to it:
+Keep local runtime configuration outside public source files.
+
+## Release
+
+Use `scripts/skillctl` for release-control actions:
+
+```bash
+python3 scripts/skillctl list
+python3 scripts/skillctl validate codex-daily-report
+python3 scripts/skillctl pack codex-daily-report
+python3 scripts/skillctl release codex-daily-report --dry-run
+```
+
+Skill releases use namespaced tags:
 
 ```text
-notion-task-manager/references/notion-config.local.yaml
+codex-daily-report/v0.1.0
+notion-task-manager/v0.1.0
 ```
 
-The local config stores:
-
-- Notion parent page URL.
-- Default task owner.
-- Active year.
-- Year database URL.
-- Data source ID and URL.
-- Month and standard view IDs.
-- Query mode.
-- Timezone.
-
-The local config is intentionally ignored by git and should not be committed.
-
-## Expected Notion Layout
-
-```text
-<parent page>
-+-- YYYY
-    +-- MM
-    +-- all tasks
-    +-- by status
-    +-- created calendar
-    +-- due calendar
-    +-- checklist
-```
-
-Each task database should have these properties:
-
-- Task name
-- Status
-- Owner
-- Due date
-- Priority
-- Created time
-- Description
-
-The actual property names are defined in the skill reference and can be adapted for your Notion workspace.
-
-## Query Behavior
-
-The task manager defaults to `search_first`.
-
-That means normal todo queries:
-
-- Fetch the configured data source schema directly.
-- Search the configured data source with a small keyword set.
-- Fetch only candidate pages needed to read task properties.
-- Ignore page body content unless the user asks for a specific task detail.
-- Avoid Notion SQL unless explicitly requested and available.
-
-This keeps common todo summaries smaller and faster.
-
-## Privacy
-
-Public files in this repository must not contain:
-
-- Personal Notion page URLs.
-- Collection IDs.
-- View IDs.
-- Real task data.
-- Personal owner names.
-
-Use `notion-config.local.yaml` for private configuration. The repository only ships the example template.
-
-## Versioning
-
-Skill releases are tagged with semantic versions:
-
-```text
-v0.1.0
-v0.2.0
-v0.3.0
-```
-
-When publishing a new skill version, use the next version tag. Documentation-only README updates do not require a new skill release tag unless the skill package changes.
-
-## Repository Layout
-
-```text
-.
-+-- README.md
-+-- notion-task-manager
-    +-- SKILL.md
-    +-- agents
-    |   +-- openai.yaml
-    +-- references
-        +-- notion-config.example.yaml
-        +-- notion-task-tracker.md
-```
+Pushing a tag matching `*/v*` runs the GitHub release workflow and uploads the packaged skill archive.

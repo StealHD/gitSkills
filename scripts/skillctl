@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 try:
@@ -305,6 +306,69 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def archive_base_name(skill):
+    return f"{skill['name']}-{skill.get('version', '0.0.0')}"
+
+
+def build_tar_gz(skill, pkg):
+    archive = DIST / f"{archive_base_name(skill)}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for rel, file_path in pkg.items():
+            tar.add(file_path, arcname=f"{skill['name']}/{rel}")
+    return archive
+
+
+def build_zip(skill, pkg):
+    archive = DIST / f"{archive_base_name(skill)}.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+        for rel, file_path in pkg.items():
+            zipf.write(file_path, arcname=f"{skill['name']}/{rel}")
+    return archive
+
+
+def extract_archive(archive, target):
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as tar:
+            tar.extractall(target)
+        return
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive, "r") as zipf:
+            zipf.extractall(target)
+        return
+    raise ValueError(f"Unsupported archive format: {archive}")
+
+
+def verify_archive(skill, archive):
+    with tempfile.TemporaryDirectory() as tmp:
+        extract_archive(archive, tmp)
+        extracted_skill = Path(tmp) / skill["name"]
+        extracted = dict(skill)
+        extracted["root"] = extracted_skill
+        errors, warnings = validate_skill(extracted)
+        for warning in warnings:
+            print(f"warn: packaged {archive.name}: {warning}")
+        if errors:
+            archive.unlink(missing_ok=True)
+            for error in errors:
+                print(f"error: packaged {archive.name}: {error}", file=sys.stderr)
+            return 1
+    return 0
+
+
+def build_archives(skill, pkg):
+    formats = skill.get("package_formats", ["tar.gz"])
+    builders = {
+        "tar.gz": build_tar_gz,
+        "zip": build_zip,
+    }
+    archives = []
+    for fmt in formats:
+        if fmt not in builders:
+            raise SystemExit(f"Unsupported package format for {skill['name']}: {fmt}")
+        archives.append(builders[fmt](skill, pkg))
+    return archives
+
+
 def command_pack(args):
     config = load_config()
     skill = get_skill(config, args.skill)
@@ -319,43 +383,40 @@ def command_pack(args):
     DIST.mkdir(exist_ok=True)
     MANIFEST_DIR.mkdir(exist_ok=True)
     version = skill.get("version", "0.0.0")
-    archive = DIST / f"{skill['name']}-{version}.tar.gz"
     pkg = package_map(skill)
+    archives = build_archives(skill, pkg)
 
-    with tarfile.open(archive, "w:gz") as tar:
-        for rel, file_path in pkg.items():
-            tar.add(file_path, arcname=f"{skill['name']}/{rel}")
+    for archive in archives:
+        rc = verify_archive(skill, archive)
+        if rc:
+            return rc
 
-    with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(tmp)
-        extracted_skill = Path(tmp) / skill["name"]
-        extracted = dict(skill)
-        extracted["root"] = extracted_skill
-        errors, warnings = validate_skill(extracted)
-        for warning in warnings:
-            print(f"warn: packaged {warning}")
-        if errors:
-            archive.unlink(missing_ok=True)
-            for error in errors:
-                print(f"error: packaged {error}", file=sys.stderr)
-            return 1
+    archive_entries = [
+        {
+            "name": archive.name,
+            "sha256": sha256_file(archive),
+        }
+        for archive in archives
+    ]
 
     manifest = {
         "skill": skill["name"],
         "version": version,
         "status": skill.get("status"),
         "release_tag": skill.get("release_tag"),
-        "archive": archive.name,
-        "sha256": sha256_file(archive),
+        "archive": archive_entries[0]["name"],
+        "sha256": archive_entries[0]["sha256"],
+        "archives": archive_entries,
         "init_release": skill.get("init_release", False),
         "release_overlay": skill.get("release_overlay"),
+        "package_formats": skill.get("package_formats", ["tar.gz"]),
         "files": list(pkg),
     }
     manifest_path = MANIFEST_DIR / f"{skill['name']}-{version}.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"packed: {archive}")
-    print(f"sha256: {manifest['sha256']}")
+    for archive in archive_entries:
+        print(f"packed: {DIST / archive['name']}")
+        print(f"sha256: {archive['sha256']}")
     print(f"manifest: {manifest_path}")
     return 0
 
@@ -377,7 +438,9 @@ def command_release(args):
     print("release plan:")
     print(f"  skill: {skill['name']}")
     print(f"  tag:   {tag}")
-    print(f"  files: dist/{skill['name']}-{skill.get('version', '0.0.0')}.tar.gz")
+    for fmt in skill.get("package_formats", ["tar.gz"]):
+        suffix = ".tar.gz" if fmt == "tar.gz" else f".{fmt}"
+        print(f"  file:  dist/{skill['name']}-{skill.get('version', '0.0.0')}{suffix}")
 
     if args.dry_run:
         print("")

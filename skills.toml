@@ -1,5 +1,8 @@
 [defaults]
 init_release = true
+package_formats = [
+  "tar.gz",
+]
 package_allowlist = [
   "SKILL.md",
   "agents/",
@@ -35,15 +38,19 @@ forbidden_init_patterns = [
 ]
 
 [skills."notion-task-manager"]
-path = "notion-task-manager"
+path = "skills/notion-task-manager"
 version = "0.1.0"
 status = "manual-published"
 public = true
+package_formats = [
+  "tar.gz",
+  "zip",
+]
 release_tag = "notion-task-manager/v0.1.0"
 notes = "Baseline imported after manual publication. Release control must not edit the skill files."
 
 [skills."codex-daily-report"]
-path = "codex-daily-report"
+path = "skills/codex-daily-report"
 version = "0.1.0"
 status = "draft"
 public = true
