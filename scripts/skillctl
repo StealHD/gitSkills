@@ -152,6 +152,13 @@ def get_skill(config, name):
     return merged
 
 
+def maintenance_root(skill):
+    path = skill.get("maintenance_path")
+    if not path:
+        return None
+    return Path(path).expanduser()
+
+
 def iter_files(path):
     for child in sorted(path.rglob("*")):
         if child.is_file():
@@ -195,6 +202,15 @@ def rel_to_skill(skill, path):
 
 def matches_any(path, globs):
     return any(fnmatch.fnmatch(path, pattern) for pattern in globs)
+
+
+def filter_sync_map(skill, pkg):
+    excludes = skill.get("sync_exclude_globs", [])
+    return {
+        rel: path
+        for rel, path in pkg.items()
+        if not matches_any(rel, excludes) and not matches_any(Path(rel).name, excludes)
+    }
 
 
 def read_text(path):
@@ -295,6 +311,56 @@ def command_validate(args):
             print(f"error: {error}", file=sys.stderr)
         return 1
     print(f"ok: {skill['name']} is valid for controlled packaging")
+    return 0
+
+
+def digest_path(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def check_sync(skill):
+    source_root = maintenance_root(skill)
+    if source_root is None:
+        return [], [f"No maintenance_path configured for {skill['name']}"]
+    if not source_root.is_dir():
+        return [f"Missing maintenance_path for {skill['name']}: {source_root}"], []
+
+    maintenance = dict(skill)
+    maintenance["root"] = source_root
+    maintenance_pkg = filter_sync_map(skill, package_map(maintenance))
+    release_pkg = filter_sync_map(skill, package_map(skill))
+
+    errors = []
+    warnings = []
+    maintenance_rels = set(maintenance_pkg)
+    release_rels = set(release_pkg)
+
+    for rel in sorted(maintenance_rels - release_rels):
+        errors.append(f"Maintenance file is not in release source: {rel}")
+    for rel in sorted(release_rels - maintenance_rels):
+        errors.append(f"Release source has no matching maintenance file: {rel}")
+    for rel in sorted(maintenance_rels & release_rels):
+        if digest_path(maintenance_pkg[rel]) != digest_path(release_pkg[rel]):
+            errors.append(f"Out of sync with maintenance source: {rel}")
+
+    return errors, warnings
+
+
+def command_check_sync(args):
+    config = load_config()
+    skill = get_skill(config, args.skill)
+    errors, warnings = check_sync(skill)
+    for warning in warnings:
+        print(f"warn: {warning}")
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"ok: {skill['name']} release source matches maintenance source")
     return 0
 
 
@@ -430,6 +496,15 @@ def command_release(args):
     skill = get_skill(config, args.skill)
     tag = args.tag or skill.get("release_tag") or f"{skill['name']}/v{skill.get('version', '0.0.0')}"
 
+    sync_errors, sync_warnings = check_sync(skill)
+    for warning in sync_warnings:
+        print(f"warn: {warning}")
+    if sync_errors:
+        for error in sync_errors:
+            print(f"error: {error}", file=sys.stderr)
+        print("error: synchronize from maintenance_path before release", file=sys.stderr)
+        return 1
+
     rc = command_pack(args)
     if rc:
         return rc
@@ -474,6 +549,10 @@ def main(argv=None):
     p = sub.add_parser("validate")
     p.add_argument("skill")
     p.set_defaults(func=command_validate)
+
+    p = sub.add_parser("check-sync")
+    p.add_argument("skill")
+    p.set_defaults(func=command_check_sync)
 
     p = sub.add_parser("pack")
     p.add_argument("skill")

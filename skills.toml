@@ -14,9 +14,21 @@ required_files = [
   "SKILL.md",
   "agents/openai.yaml",
 ]
+sync_exclude_globs = [
+  ".DS_Store",
+  "**/.DS_Store",
+  "*.local.*",
+  "**/*.local.*",
+  "*.local.json",
+  "**/*.local.json",
+]
 forbidden_package_globs = [
   ".DS_Store",
   "**/.DS_Store",
+  "*.local.*",
+  "**/*.local.*",
+  "*.local.json",
+  "**/*.local.json",
   "*.test.md",
   "*.filtered-test.md",
   "*.skill-test.md",
@@ -39,6 +51,7 @@ forbidden_init_patterns = [
 
 [skills."notion-task-manager"]
 path = "skills/notion-task-manager"
+maintenance_path = "/Users/stealmac/.codex/skills/notion-task-manager"
 version = "0.1.0"
 status = "manual-published"
 public = true
@@ -51,6 +64,7 @@ notes = "Baseline imported after manual publication. Release control must not ed
 
 [skills."codex-daily-report"]
 path = "skills/codex-daily-report"
+maintenance_path = "/Users/stealmac/.codex/skills/codex-daily-report"
 version = "0.1.1"
 status = "published"
 public = true

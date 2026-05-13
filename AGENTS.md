@@ -20,8 +20,11 @@ This repository is a release-control workspace for Codex skills.
 Use `scripts/skillctl` for release-control actions:
 
 - `scripts/skillctl list`
+- `scripts/skillctl check-sync <skill>`
 - `scripts/skillctl validate <skill>`
 - `scripts/skillctl pack <skill>`
 - `scripts/skillctl release <skill> --dry-run`
+
+Before every release, synchronize from the configured maintenance/deployed skill directory into `skills/<skill>`, then run `scripts/skillctl check-sync <skill>`. Do not release when the maintenance source and release source differ, except for configured local/private files such as `*.local.*` and `.DS_Store`.
 
 If GitHub release details are missing, prepare the package and tag instructions but do not guess remotes or credentials.
