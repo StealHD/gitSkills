@@ -16,6 +16,7 @@ Each skill lives in its own directory under `skills/`. The repository root is re
 |   +-- workflows/
 +-- skills/
     +-- codex-daily-report/
+    +-- dbc-skill/
     +-- notion-task-manager/
 ```
 
@@ -41,6 +42,24 @@ Skill path:
 
 ```text
 skills/codex-daily-report/
+```
+
+### dbc-skill
+
+`dbc-skill` helps Codex run database inspection workflows through a configured DBC FastAPI backend.
+
+It supports:
+
+- Runtime database inspection through the backend API.
+- Instance discovery and PMM1/PMM3 source disambiguation.
+- MySQL, PostgreSQL, MongoDB, and Oracle AWR inspection surfaces.
+- Batch inspection status polling and report retrieval.
+- Local backend target configuration through `config/api-targets.local.json`.
+
+Skill path:
+
+```text
+skills/dbc-skill/
 ```
 
 ### notion-task-manager
@@ -72,6 +91,10 @@ Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/s
 ```
 
 ```text
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/dbc-skill
+```
+
+```text
 Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/notion-task-manager
 ```
 
@@ -79,6 +102,7 @@ Or install manually by copying one skill folder into your Codex skills directory
 
 ```text
 ~/.codex/skills/codex-daily-report
+~/.codex/skills/dbc-skill
 ~/.codex/skills/notion-task-manager
 ```
 
@@ -88,6 +112,7 @@ Read each skill's setup reference before enabling automation:
 
 ```text
 skills/codex-daily-report/references/initial-setup.md
+skills/dbc-skill/config/api-targets.example.json
 skills/notion-task-manager/references/notion-config.example.yaml
 ```
 
@@ -99,16 +124,22 @@ Use `scripts/skillctl` for release-control actions:
 
 ```bash
 python3 scripts/skillctl list
+python3 scripts/skillctl check-sync codex-daily-report
 python3 scripts/skillctl validate codex-daily-report
 python3 scripts/skillctl pack codex-daily-report
 python3 scripts/skillctl release codex-daily-report --dry-run
 ```
 
+Before publishing a skill, sync the deployed maintenance copy from `~/.codex/skills/<skill>` into `skills/<skill>`, excluding local/private files such as `*.local.*`, then run `check-sync`. `scripts/skillctl release <skill>` also enforces this check.
+
 Skill releases use namespaced tags:
 
 ```text
 codex-daily-report/v0.1.0
+codex-daily-report/v0.1.1
+dbc-skill/v0.1.0
 notion-task-manager/v0.1.0
+notion-task-manager/v0.1.1
 ```
 
 Pushing a tag matching `*/v*` runs the GitHub release workflow and uploads the packaged skill archive.
