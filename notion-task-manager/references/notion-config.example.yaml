@@ -1,0 +1,21 @@
+timezone: "Asia/Shanghai"
+parent_page_name: "work plan"
+parent_page_url: "https://www.notion.so/<parent-page-id>"
+default_contact: "<default-owner>"
+query_mode: "search_first"
+active_year: "YYYY"
+
+year_databases:
+  "YYYY":
+    database_url: "https://www.notion.so/<year-database-id>"
+    data_source_url: "collection://<data-source-id>"
+    data_source_id: "<data-source-id>"
+    views:
+      "MM": "view://<month-view-id>"
+      all_tasks: "view://<all-tasks-view-id>"
+      by_status: "view://<by-status-view-id>"
+      created_calendar: "view://<created-calendar-view-id>"
+      due_calendar: "view://<due-calendar-view-id>"
+      checklist: "view://<checklist-view-id>"
+
+deprecated_targets: []

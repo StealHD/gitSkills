@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+import argparse
+import ast
+import fnmatch
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "skills.toml"
+DIST = ROOT / "dist"
+MANIFEST_DIR = ROOT / ".release"
+
+PUBLIC_SECRET_PATTERNS = [
+    ("notion_url", re.compile(r"https://(?:www\.)?notion\.so/[A-Za-z0-9][^\s`<>)\"]*")),
+    ("notion_collection_id", re.compile(r"collection://[0-9a-fA-F-]{20,}")),
+    ("notion_view_id", re.compile(r"view://[0-9a-fA-F-]{20,}")),
+    ("wecom_webhook_key", re.compile(r"key=[0-9a-fA-F-]{20,}")),
+    ("token_like", re.compile(r"(?i)(api[_-]?key|token|secret|webhook).{0,24}[=:]\s*['\"][A-Za-z0-9_.:-]{24,}['\"]")),
+]
+
+LOCAL_CONTEXT_PATTERNS = [
+    ("local_user_path", re.compile(r"/Users/[^/\s`]+/")),
+]
+
+
+def split_toml_path(value):
+    parts = []
+    buf = []
+    quoted = False
+    escaped = False
+    for char in value:
+        if escaped:
+            buf.append(char)
+            escaped = False
+            continue
+        if char == "\\" and quoted:
+            buf.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            quoted = not quoted
+            buf.append(char)
+            continue
+        if char == "." and not quoted:
+            part = "".join(buf).strip()
+            parts.append(part.strip('"'))
+            buf = []
+            continue
+        buf.append(char)
+    if buf:
+        parts.append("".join(buf).strip().strip('"'))
+    return parts
+
+
+def parse_toml_scalar(value):
+    value = value.strip()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if value.startswith("["):
+        return ast.literal_eval(value)
+    if value.startswith('"') or value.startswith("'"):
+        return ast.literal_eval(value)
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def parse_basic_toml(text):
+    data = {}
+    current = data
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        line = raw.strip()
+        i += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = data
+            for part in split_toml_path(line[1:-1]):
+                current = current.setdefault(part, {})
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and not value.endswith("]"):
+            array_lines = [value]
+            while i < len(lines):
+                array_lines.append(lines[i].strip())
+                if lines[i].strip().endswith("]"):
+                    i += 1
+                    break
+                i += 1
+            value = "\n".join(array_lines)
+        current[key] = parse_toml_scalar(value)
+    return data
+
+
+def load_config():
+    if not CONFIG.exists():
+        raise SystemExit(f"Missing config: {CONFIG}")
+    if tomllib:
+        with CONFIG.open("rb") as f:
+            return tomllib.load(f)
+    return parse_basic_toml(CONFIG.read_text(encoding="utf-8"))
+
+
+def compile_config_patterns(patterns):
+    compiled = []
+    for idx, pattern in enumerate(patterns or [], start=1):
+        normalized = pattern.replace("[:space:]", r"\s")
+        try:
+            compiled.append((f"init_pattern_{idx}", re.compile(normalized)))
+        except re.error as exc:
+            raise SystemExit(f"Invalid forbidden_init_patterns entry {idx}: {pattern}: {exc}")
+    return compiled
+
+
+def all_skills(config):
+    return config.get("skills", {})
+
+
+def get_skill(config, name):
+    skills = all_skills(config)
+    if name not in skills:
+        known = ", ".join(sorted(skills)) or "<none>"
+        raise SystemExit(f"Unknown skill '{name}'. Known skills: {known}")
+    defaults = config.get("defaults", {})
+    merged = dict(defaults)
+    merged.update(skills[name])
+    merged["name"] = name
+    merged["root"] = ROOT / merged["path"]
+    return merged
+
+
+def iter_files(path):
+    for child in sorted(path.rglob("*")):
+        if child.is_file():
+            yield child
+
+
+def package_files(skill):
+    root = skill["root"]
+    files = []
+    for entry in skill.get("package_allowlist", []):
+        src = root / entry.rstrip("/")
+        if not src.exists():
+            continue
+        if src.is_file():
+            files.append(src)
+        else:
+            files.extend(iter_files(src))
+    return sorted(set(files))
+
+
+def package_map(skill):
+    result = {}
+    for file_path in package_files(skill):
+        result[rel_to_skill(skill, file_path)] = file_path
+
+    overlay = skill.get("release_overlay")
+    if overlay:
+        overlay_root = ROOT / overlay
+        if not overlay_root.is_dir():
+            raise SystemExit(f"Configured release_overlay does not exist: {overlay}")
+        for file_path in iter_files(overlay_root):
+            rel = file_path.relative_to(overlay_root).as_posix()
+            result[rel] = file_path
+
+    return dict(sorted(result.items()))
+
+
+def rel_to_skill(skill, path):
+    return path.relative_to(skill["root"]).as_posix()
+
+
+def matches_any(path, globs):
+    return any(fnmatch.fnmatch(path, pattern) for pattern in globs)
+
+
+def read_text(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def parse_frontmatter(text):
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        return {}
+    data = {}
+    for line in text[4:end].splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            data[key.strip()] = value.strip().strip('"')
+    return data
+
+
+def validate_skill(skill):
+    errors = []
+    warnings = []
+    root = skill["root"]
+
+    if not root.is_dir():
+        return [f"Missing skill directory: {root}"], warnings
+
+    for required in skill.get("required_files", []):
+        if not (root / required).is_file():
+            errors.append(f"Missing required file: {skill['path']}/{required}")
+
+    skill_md = root / "SKILL.md"
+    if skill_md.exists():
+        frontmatter = parse_frontmatter(read_text(skill_md))
+        if frontmatter.get("name") != skill["name"]:
+            errors.append(f"SKILL.md name mismatch: expected {skill['name']}, got {frontmatter.get('name')!r}")
+        if not frontmatter.get("description"):
+            errors.append("SKILL.md missing description in frontmatter")
+
+    pkg = package_map(skill)
+    if not pkg:
+        errors.append("Package allowlist produced no files")
+
+    forbidden = skill.get("forbidden_package_globs", [])
+    for rel, file_path in pkg.items():
+        if matches_any(rel, forbidden) or matches_any(file_path.name, forbidden):
+            errors.append(f"Forbidden file would be packaged: {skill['name']}/{rel}")
+
+    packaged_set = {p.resolve() for p in pkg.values() if skill["root"] in p.resolve().parents}
+    for file_path in iter_files(root):
+        if file_path.resolve() not in packaged_set:
+            rel = rel_to_skill(skill, file_path)
+            if matches_any(rel, forbidden) or matches_any(file_path.name, forbidden):
+                warnings.append(f"Extra ignored file in skill directory: {skill['path']}/{rel}")
+
+    if skill.get("public", False):
+        init_patterns = compile_config_patterns(skill.get("forbidden_init_patterns", [])) if skill.get("init_release", False) else []
+        for rel, file_path in pkg.items():
+            text = read_text(file_path)
+            if not text:
+                continue
+            for label, pattern in PUBLIC_SECRET_PATTERNS:
+                for idx, line in enumerate(text.splitlines(), start=1):
+                    if "<configure:" in line or "$WECOM_WEBHOOK_URL" in line:
+                        continue
+                    if pattern.search(line):
+                        errors.append(f"Possible private value ({label}) in {skill['name']}/{rel}:{idx}")
+            for label, pattern in LOCAL_CONTEXT_PATTERNS:
+                for idx, line in enumerate(text.splitlines(), start=1):
+                    if pattern.search(line):
+                        warnings.append(f"Local context reference ({label}) in {skill['name']}/{rel}:{idx}")
+            for label, pattern in init_patterns:
+                for idx, line in enumerate(text.splitlines(), start=1):
+                    if pattern.search(line):
+                        errors.append(f"Init release data leak ({label}) in {skill['name']}/{rel}:{idx}")
+
+    return errors, warnings
+
+
+def command_list(args):
+    config = load_config()
+    for name, data in sorted(all_skills(config).items()):
+        print(f"{name}\t{data.get('version', '-')}\t{data.get('status', '-')}\t{data.get('path', '-')}")
+
+
+def command_validate(args):
+    config = load_config()
+    skill = get_skill(config, args.skill)
+    errors, warnings = validate_skill(skill)
+    for warning in warnings:
+        print(f"warn: {warning}")
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"ok: {skill['name']} is valid for controlled packaging")
+    return 0
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def command_pack(args):
+    config = load_config()
+    skill = get_skill(config, args.skill)
+    errors, warnings = validate_skill(skill)
+    for warning in warnings:
+        print(f"warn: {warning}")
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    DIST.mkdir(exist_ok=True)
+    MANIFEST_DIR.mkdir(exist_ok=True)
+    version = skill.get("version", "0.0.0")
+    archive = DIST / f"{skill['name']}-{version}.tar.gz"
+    pkg = package_map(skill)
+
+    with tarfile.open(archive, "w:gz") as tar:
+        for rel, file_path in pkg.items():
+            tar.add(file_path, arcname=f"{skill['name']}/{rel}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(archive, "r:gz") as tar:
+            tar.extractall(tmp)
+        extracted_skill = Path(tmp) / skill["name"]
+        extracted = dict(skill)
+        extracted["root"] = extracted_skill
+        errors, warnings = validate_skill(extracted)
+        for warning in warnings:
+            print(f"warn: packaged {warning}")
+        if errors:
+            archive.unlink(missing_ok=True)
+            for error in errors:
+                print(f"error: packaged {error}", file=sys.stderr)
+            return 1
+
+    manifest = {
+        "skill": skill["name"],
+        "version": version,
+        "status": skill.get("status"),
+        "release_tag": skill.get("release_tag"),
+        "archive": archive.name,
+        "sha256": sha256_file(archive),
+        "init_release": skill.get("init_release", False),
+        "release_overlay": skill.get("release_overlay"),
+        "files": list(pkg),
+    }
+    manifest_path = MANIFEST_DIR / f"{skill['name']}-{version}.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"packed: {archive}")
+    print(f"sha256: {manifest['sha256']}")
+    print(f"manifest: {manifest_path}")
+    return 0
+
+
+def git_ok():
+    return subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def command_release(args):
+    config = load_config()
+    skill = get_skill(config, args.skill)
+    tag = args.tag or skill.get("release_tag") or f"{skill['name']}/v{skill.get('version', '0.0.0')}"
+
+    rc = command_pack(args)
+    if rc:
+        return rc
+
+    print("")
+    print("release plan:")
+    print(f"  skill: {skill['name']}")
+    print(f"  tag:   {tag}")
+    print(f"  files: dist/{skill['name']}-{skill.get('version', '0.0.0')}.tar.gz")
+
+    if args.dry_run:
+        print("")
+        print("dry-run commands:")
+        print(f"  git tag {tag}")
+        print(f"  git push origin {tag}")
+        return 0
+
+    if not git_ok():
+        print("error: not a git repository; initialize Git before creating release tags", file=sys.stderr)
+        return 1
+
+    exists = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    if exists:
+        print(f"error: tag already exists: {tag}", file=sys.stderr)
+        return 1
+
+    subprocess.check_call(["git", "tag", tag], cwd=ROOT)
+    print(f"tagged: {tag}")
+    print(f"next: git push origin {tag}")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Control validation, packaging, and release for skills.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("list")
+    p.set_defaults(func=command_list)
+
+    p = sub.add_parser("validate")
+    p.add_argument("skill")
+    p.set_defaults(func=command_validate)
+
+    p = sub.add_parser("pack")
+    p.add_argument("skill")
+    p.set_defaults(func=command_pack)
+
+    p = sub.add_parser("release")
+    p.add_argument("skill")
+    p.add_argument("--tag")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=command_release)
+
+    args = parser.parse_args(argv)
+    return args.func(args) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

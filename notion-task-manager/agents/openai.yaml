@@ -1,0 +1,4 @@
+interface:
+  display_name: "Notion Task Manager"
+  short_description: "Record and query tasks in a configured Notion tracker"
+  default_prompt: "Use $notion-task-manager to configure my Notion task tracker if needed, then record tasks into yearly tables, organize them by creation month, and remind me of unfinished or overdue work."

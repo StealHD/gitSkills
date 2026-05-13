@@ -1,0 +1,21 @@
+{
+  "exclude_empty_sessions": true,
+  "thread_ids": [],
+  "title_patterns": [
+    "^\\(无标题\\)$",
+    "codex_session_daily_report\\.py"
+  ],
+  "cwd_patterns": [],
+  "user_message_patterns": [
+    "^测试.*日报.*$",
+    "^测试.*skill.*$",
+    "^skill.*测试.*$",
+    "skill.*日报|日报.*skill",
+    "企业微信.*日报|日报.*企业微信"
+  ],
+  "notes": [
+    "Maintain this file to hide noise sessions from the raw daily report.",
+    "Use thread_ids for exact one-off exclusions.",
+    "Use regex patterns for recurring noise such as report self-tests, empty sessions, or skill maintenance."
+  ]
+}

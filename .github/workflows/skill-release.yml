@@ -1,0 +1,48 @@
+name: Skill Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: Skill name from skills.toml
+        required: true
+  push:
+    tags:
+      - "*/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve skill
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            skill="${{ github.event.inputs.skill }}"
+          else
+            skill="${GITHUB_REF_NAME%/v*}"
+          fi
+          echo "skill=$skill" >> "$GITHUB_OUTPUT"
+
+      - name: Validate
+        run: python3 scripts/skillctl validate "${{ steps.resolve.outputs.skill }}"
+
+      - name: Pack
+        run: python3 scripts/skillctl pack "${{ steps.resolve.outputs.skill }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "${{ steps.resolve.outputs.skill }}-package"
+          path: dist/*
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "Automated skill release."

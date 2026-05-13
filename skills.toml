@@ -1,0 +1,51 @@
+[defaults]
+init_release = true
+package_allowlist = [
+  "SKILL.md",
+  "agents/",
+  "references/",
+  "scripts/",
+  "assets/",
+]
+required_files = [
+  "SKILL.md",
+  "agents/openai.yaml",
+]
+forbidden_package_globs = [
+  ".DS_Store",
+  "**/.DS_Store",
+  "*.test.md",
+  "*.filtered-test.md",
+  "*.skill-test.md",
+  "*-report-*.md",
+  "__pycache__/*",
+  "**/__pycache__/*",
+  "*.pyc",
+]
+forbidden_init_patterns = [
+  "codex-session-report-[0-9]{4}-[0-9]{2}-[0-9]{2}",
+  "codex-daily-submit-[0-9]{4}-[0-9]{2}",
+  "filtered-test",
+  "skill-test",
+  "测试输出今天的日报",
+  "测试今日的",
+  "脚本需要写进skill",
+  "日报总结的skill",
+  "/Users/[^/[:space:]`]+/",
+]
+
+[skills."notion-task-manager"]
+path = "notion-task-manager"
+version = "0.1.0"
+status = "manual-published"
+public = true
+release_tag = "notion-task-manager/v0.1.0"
+notes = "Baseline imported after manual publication. Release control must not edit the skill files."
+
+[skills."codex-daily-report"]
+path = "codex-daily-report"
+version = "0.1.0"
+status = "draft"
+public = true
+release_tag = "codex-daily-report/v0.1.0"
+notes = "Pending first controlled release."

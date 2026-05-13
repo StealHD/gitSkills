@@ -1,0 +1,29 @@
+.DS_Store
+**/.DS_Store
+
+# Build and release outputs
+dist/
+.release/
+
+# Test outputs
+tests/**/actual/
+tests/**/.tmp/
+
+# Generated local reports and drafts
+codex-session-report-*.md
+codex-daily-submit-*.md
+codex-weekly-submit-*.md
+codex-weekly-plan-*.md
+codex-monthly-submit-*.md
+*.filtered-test.md
+*.skill-test.md
+
+# Python/tooling caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local environment
+.env
+.venv/
+venv/

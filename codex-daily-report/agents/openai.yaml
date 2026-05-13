@@ -1,0 +1,7 @@
+interface:
+  display_name: "Codex 日报总结"
+  short_description: "按配置生成日报周报月报并可发送"
+  default_prompt: "Use $codex-daily-report to check the report schedule first, honor runtime output/exclusion configuration, generate daily reports on China workdays, weekly reports on Sunday, monthly reports on the last China workday, and send WeCom when requested."
+
+policy:
+  allow_implicit_invocation: true
