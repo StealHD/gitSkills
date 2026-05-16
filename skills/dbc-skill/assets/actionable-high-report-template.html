@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${REPORT_TITLE}</title>
+<style>
+:root {
+  --text: #202124;
+  --muted: #667085;
+  --line: #d9dee7;
+  --soft-line: #e8ebf0;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --soft: #f8fafc;
+  --accent: #315b7d;
+  --accent-soft: #e8f1f8;
+  --danger: #9b2c2c;
+  --high: #b54708;
+  --medium: #8a5a00;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+section,
+article,
+details,
+summary {
+  min-width: 0;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  width: min(100%, 1380px);
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+}
+.toc {
+  position: sticky;
+  top: 20px;
+  border-right: 1px solid var(--line);
+  padding-right: 18px;
+}
+.toc strong {
+  display: block;
+  margin-bottom: 8px;
+}
+.toc a {
+  display: block;
+  color: #24445f;
+  text-decoration: none;
+  padding: 6px 0;
+}
+main {
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 34px 42px;
+}
+h1 {
+  font-size: 28px;
+  line-height: 1.25;
+  margin: 0 0 22px;
+}
+h2 {
+  font-size: 21px;
+  margin: 34px 0 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+h3 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+h4 {
+  font-size: 15px;
+  margin: 14px 0 6px;
+}
+.header-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(235px, 1fr));
+  gap: 10px;
+  margin: 18px 0 26px;
+}
+.header-metrics .metric {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  padding: 10px 12px;
+}
+.header-metrics b {
+  display: block;
+  margin-bottom: 4px;
+  color: #344054;
+  font-size: 13px;
+}
+.header-metrics .metric-value {
+  display: block;
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+.kv {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  border-color: var(--soft-line);
+  border: 1px solid var(--soft-line);
+  border-bottom: 0;
+  margin: 18px 0 26px;
+  min-width: 0;
+}
+.kv dt,
+.kv dd {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.kv dt,
+.kv dd {
+  border-bottom-color: var(--soft-line);
+}
+.kv dt {
+  background: #eef1f5;
+  font-weight: 600;
+}
+.instance {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+  margin: 16px 0;
+  background: #fff;
+  min-width: 0;
+}
+.pill {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 1px 7px;
+  margin-left: 8px;
+  color: #fff;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.pill.critical {
+  background: var(--danger);
+}
+.pill.high {
+  background: var(--high);
+}
+.pill.medium {
+  background: var(--medium);
+}
+.muted {
+  color: var(--muted);
+}
+.notice {
+  border: 1px solid #e4c26d;
+  background: #fff8e5;
+  padding: 10px 12px;
+  margin: 12px 0;
+}
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+th,
+td {
+  border: 1px solid var(--line);
+  padding: 7px 8px;
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+th {
+  background: #eef1f5;
+}
+.glossary-group {
+  margin: 18px 0 24px;
+}
+.glossary-group h3 {
+  margin-bottom: 8px;
+}
+.glossary-list {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  border: 1px solid var(--soft-line);
+  border-bottom: 0;
+  min-width: 0;
+}
+.glossary-list dt,
+.glossary-list dd {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--soft-line);
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.glossary-list dt {
+  background: #eef1f5;
+  font-weight: 600;
+}
+.glossary-list dd {
+  background: #fff;
+}
+details.sql-details,
+details.more-sql,
+details.inline-sql {
+  margin-top: 12px;
+}
+details.sql-details > summary,
+details.more-sql > summary,
+details.inline-sql > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+}
+.sql-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.sql-card {
+  border: 1px solid var(--soft-line);
+  border-radius: 6px;
+  background: var(--soft);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.sql-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.sql-index {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.query-id {
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid #d7e3ee;
+  border-radius: 4px;
+  background: #edf5fb;
+  color: #243b53;
+  word-break: break-all;
+  font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sql-kind {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #eef1f5;
+  color: #475467;
+  font-size: 12px;
+}
+.sql-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0 0 10px;
+}
+.sql-metrics span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  padding: 3px 7px;
+  border: 1px solid #dde5ee;
+  border-radius: 5px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+}
+.sql-metrics b {
+  color: #667085;
+  font-weight: 600;
+}
+pre {
+  max-width: 100%;
+  max-height: 360px;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid #dfe3e8;
+  background: #f1f3f5;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+pre code {
+  white-space: inherit;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+code {
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.report-footer {
+  margin-top: 32px;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .layout {
+    display: block;
+    padding: 16px;
+  }
+  .toc {
+    position: static;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 16px;
+    padding: 0 0 12px;
+  }
+  main {
+    padding: 24px 20px;
+  }
+  .kv {
+    grid-template-columns: 1fr;
+  }
+  .glossary-list {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc">
+    <strong>目录</strong>
+    <a href="#criteria">判定口径</a>
+    <a href="#summary">总体结论</a>
+    <a href="#actionable">actionable_high 明细</a>
+    ${EXTRA_SQL_NAV}
+    <a href="#downgraded">downgraded_watch 摘要</a>
+    ${ORACLE_AWR_NAV}
+    <a href="#metrics">指标说明</a>
+    <a href="#next">后续动作建议</a>
+  </nav>
+  <main>
+    <h1>${REPORT_TITLE}</h1>
+    <div class="header-metrics">
+      ${HEADER_METRICS}
+    </div>
+    ${BLOCKERS}
+    <section id="criteria">
+      <h2>判定口径</h2>
+      ${CRITERIA_SECTION}
+    </section>
+    <section id="summary">
+      <h2>总体结论</h2>
+      ${SUMMARY_SECTION}
+    </section>
+    <section id="actionable">
+      <h2>actionable_high 明细</h2>
+      ${ACTIONABLE_HIGH_SECTION}
+    </section>
+    ${EXTRA_SQL_SECTION}
+    <section id="downgraded">
+      <h2>downgraded_watch 摘要</h2>
+      ${DOWNGRADED_WATCH_SECTION}
+    </section>
+    ${ORACLE_AWR_SECTION}
+    <section id="metrics">
+      <h2>指标说明</h2>
+      ${METRICS_GLOSSARY_SECTION}
+    </section>
+    <section id="next">
+      <h2>后续动作建议</h2>
+      ${NEXT_ACTIONS_SECTION}
+    </section>
+    <div class="report-footer">生成时间：${GENERATED_AT}</div>
+  </main>
+</div>
+</body>
+</html>

@@ -79,12 +79,12 @@ notes = "Packaging-only release adding a zip artifact. Release control must not 
 [skills."dbc-skill"]
 path = "skills/dbc-skill"
 maintenance_path = "/Users/stealmac/.codex/skills/dbc-skill"
-version = "0.1.0"
+version = "0.1.1"
 status = "published"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "dbc-skill/v0.1.0"
-notes = "Initial release synchronized from the deployed maintenance version. Local API target config is excluded."
+release_tag = "dbc-skill/v0.1.1"
+notes = "Patch release adding actionable_high HTML template controls and report readability rules."
