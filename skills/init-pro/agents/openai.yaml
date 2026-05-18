@@ -1,0 +1,4 @@
+interface:
+  display_name: "Init Pro"
+  short_description: "Scaffold reusable project control docs"
+  default_prompt: "Use $init-pro to initialize this repository with reusable AGENTS, PLAN, WORKLOG, context-read rules, and control-plane contracts."
