@@ -100,12 +100,13 @@ The caller can and should control the returned format.
 
 Single-instance runtime inspection:
 
-- Default: return the exact `work-report` stdout from `scripts/smoke_api.py`, with compact summary and at most 5 SQL bodies whose `avg_ms > 1000`.
+- Default: return the exact `work-report` stdout from `scripts/smoke_api.py`, with compact summary and at most 5 SQL bodies whose `avg_ms > 1000`; each emitted slow SQL row must include its database/schema/namespace context when available, or `库=unknown` when the backend report does not provide it.
 - Use the API workflow above for relative and historical windows. When the user gives concrete times such as `2026-04-16 10:00 到 10:15` or `昨天 10:00 开始查 15 分钟`, convert them to timezone-aware ISO 8601 and use historical mode.
 - Oracle is separate: use `GET /api/v1/awr-report/summary?report_start=...`; never force Oracle through PMM inspection routes.
+- Oracle default output has its own fixed work-report shape; do not use the PMM instance format for Oracle AWR.
 - Do not manually rewrite, rename, summarize, translate, reorder, or compress script-generated `work-report` output.
 - Do not replace the script's SQL fenced blocks with “主要慢 SQL”, table names, query features, or fingerprint-only summaries.
-- If the user asks for report摘要, 完整报告/原始报告, SQL, or HTML 验证页, return the requested mode directly. SQL output must use actual `problem_sqls[].sql` when present, with `query_id`, template metrics, template SQL/fingerprint, and one representative concrete SQL.
+- If the user asks for report摘要, 完整报告/原始报告, SQL, or HTML 验证页, return the requested mode directly. SQL output must use actual `problem_sqls[].sql` when present, with `query_id`, database/schema/namespace context, template metrics, template SQL/fingerprint, and one representative concrete SQL.
 
 Batch, all-instance, scheduled, or automation inspection:
 
@@ -118,6 +119,8 @@ Batch, all-instance, scheduled, or automation inspection:
 - Use `write_html=false` by default. Production defaults to `write_html=false` to avoid large HTML artifact growth; enable it only when the user explicitly asks for HTML files.
 - `max_instances_per_source` defaults to 20 in current backend configs. Real full-scope PMM1/PMM3 runs must explicitly raise it, for example to 200.
 - Poll `GET /api/v1/inspections/batch/{batch_id}` until terminal status, reading `source_progress`, `current_source_type`, `current_instance_key`, `submitted`, `succeeded`, `failed`, and `progress_pct`.
+- Backend batch/result payloads may include business tags. Read `business_line_tag`, `business_line_tags`, `business_tag`, `business_tags`, `biz_tag`, `biz_tags`, `tag`, or `tags` from the result/report and from nested `labels`/`metadata` when present; missing tags are reported as `未分组`.
+- Full-scope output must include a `业务分类` summary grouped by tag, with submitted/succeeded/failed, risk distribution, and top actionable/critical/high items within each tag. Keep `source_progress` as source execution progress only; do not use it as the business grouping.
 - If `current_instance_key=null`, do not assume failure; it may be between two instances during the `delay_seconds` window.
 - PMM1 QAN 502 or `No QAN instance` warnings are known degradable conditions. Do not mark the batch failed unless `failed > 0` or failed results show real failed instances.
 - Return only batch summary, failure list, and optional actionable risk summary after explicit report lookup.
@@ -128,16 +131,16 @@ Batch high-risk filtering:
 - For all-instance outputs such as “只返回高危”, “高危就行”, or “节后巡检”, default to a two-tier risk view: `actionable_high` first, then a compact `downgraded_watch` count when relevant. Avoid naming downgraded items `watch_high`, because the word `high` makes users think the downgrade did not take effect.
 - Promote an instance to `actionable_high` when any of these are true:
   - The report has at least one qualifying non-collector, non-system, non-oplog slow SQL row after applying the slow SQL output thresholds below. Backend `slow_sql risk` alone is reference metadata and must not promote an instance by itself.
-  - `locks` or `transactions` section risk is `medium` or higher and has real impact evidence. Do not promote capability-only messages such as “capability could not be confirmed”. Do not promote on high `wait_count` alone when total wait is low; for example `wait_count=303` with `wait_duration=2.9s/15m` is about `9.7ms` per wait and should be downgraded unless corroborated.
+  - `locks` or `transactions` section risk is `medium` or higher and has real impact evidence. Do not promote capability-only messages such as “capability could not be confirmed”. Lock risk is important, but it needs a combined impact check: do not promote on high `wait_count` alone when total wait and average wait are low; for example `wait_count=303` with `wait_duration=2.9s/15m` is about `9.7ms` per wait and should be downgraded unless corroborated.
   - `anomalies` has resource-pressure rules and host resource pressure is also material: `cpu_usage_percent >= 70`, `memory_used_percent >= 90`, or `disk_used_percent >= 85`.
   - `anomalies` is coupled with concrete contention or slow-query evidence in another section.
-- Lock/transaction impact evidence for `actionable_high` means one of: total lock wait duration `>= 30s/15m`; average wait `>= 100ms`; `deadlock_count > 0`; blocking sessions present; long-running transactions present; or high wait count coupled with qualifying non-collector slow SQL, connection backlog/business timeout evidence, or material CPU/IO pressure. Otherwise treat high wait count with low total duration as `downgraded_watch`.
+- Lock/transaction impact evidence for `actionable_high` means one of: total lock wait duration `>= 30s/15m`; average wait `>= 100ms`; `deadlock_count > 0`; blocking sessions present; long-running transactions present; or high wait count coupled with qualifying non-collector slow SQL, connection backlog/business timeout evidence, or material CPU/IO pressure. Downgrade lock-only findings only when the combined constraints all say “low current impact”: no qualifying slow SQL, no deadlock/blocking/long transaction, total wait `< 30s/15m`, average wait `< 100ms`, and no material resource/backlog/timeout signal.
 - Treat MySQL shape counters such as `select_full_join`, `select_scan`, and `tmp_disk_tables` as auxiliary evidence, not standalone actionable risk. Do not promote an instance to `actionable_high` only because these counters are present. Use them to strengthen `actionable_high` only when they are coupled with qualifying non-collector slow SQL, real locks/transactions, or material CPU/IO/disk pressure. Without those signals, keep them in `downgraded_watch` or observation, even when values such as `select_full_join=15`, `select_scan=1951`, and `tmp_disk_tables=844` appear.
 - Exception: if shape counters are extremely high and repeated across recent reports, they may stay in `downgraded_watch` as capacity-relevant trend evidence, but still should not become `actionable_high` without a concrete impact signal.
 - MongoDB oplog slow-log patterns are known replication/oplog tailing traffic, not normal business slow queries. MongoDB replication tails `local.oplog.rs` with tailable cursors, and `getMore` on awaitData/tailable cursors can spend time waiting for new oplog entries. Treat fingerprints, abstracts, or JSON command bodies that match `GETMORE oplog.rs`, `GETMORE local.oplog.rs`, `ns:"local.oplog.rs"`, or `collection:"oplog.rs"` with oplog/getMore semantics as `oplog_tail_observed`, not an alert, not `actionable_high`, and not business slow SQL, even when they came from slow logs and even when avg/max duration, exec count, or load are high.
 - Do not promote MongoDB oplog tail slow-log patterns based only on metrics such as `exec_count`, `avg_ms`, `max_ms`, or `load`; for example `exec_count=554`, `avg_ms≈1504`, `max_ms≈5000`, `load≈0.93` is still downgraded by default when no impact evidence exists.
 - Only these situations should make MongoDB oplog tail slow-log patterns worth attention: replication lag clearly increases; oplog window is too small; getMore returns very large batches while network/disk/CPU is under pressure; a non-replication client abnormally reads `local.oplog.rs`; or a large volume of these logs appears while secondaries cannot keep up with primary. If these signals are unavailable, keep oplog slow-log patterns out of `告警`, `关键发现`, `actionable_high`, and default slow SQL details; at most include a folded downgrade count in `downgraded_watch` or observed summary.
-- When an actionable report has non-oplog slow SQL, include concrete slow SQL details by default: prefer `example_sql` from slow-query evidence, otherwise include the full `fingerprint`/`abstract`, plus `query_id`, `avg_ms`, `exec_count`, `load`, and `rows_examined` when present. Put each slow log SQL/fingerprint in a fenced code block and label whether it came from `example_sql` or only from `fingerprint`/`abstract`; do not collapse confirmed slow-log evidence into table names or one-line prose. Do not count MongoDB oplog tail slow-log patterns as this required slow SQL detail.
+- When an actionable report has non-oplog slow SQL, include concrete slow SQL details by default: prefer `example_sql` from slow-query evidence, otherwise include the full `fingerprint`/`abstract`, plus `query_id`, database/schema/namespace context, `avg_ms`, `exec_count`, `load`, and `rows_examined` when present. Put each slow log SQL/fingerprint in a fenced code block and label whether it came from `example_sql` or only from `fingerprint`/`abstract`; do not collapse confirmed slow-log evidence into table names or one-line prose. Do not count MongoDB oplog tail slow-log patterns as this required slow SQL detail.
 - Slow SQL detail output is not “dump every backend high-risk evidence item”. First suppress collector/system SQL, including `performance_schema`, `agent='perfschema'`, PMM/monitoring collector queries, `events_statements_summary_by_digest`, `events_waits_summary_global_by_event_name`, `SHOW GLOBAL VARIABLES`, and similar metadata collection SQL. For actionable_high HTML reports, a SQL row qualifies for `慢 SQL 语句` only when `avg_ms > 1000`; `exec_count`, `load`, `rows_examined_avg`, or `lock_time_avg_ms` must not qualify a row by themselves. Treat backend `slow_sql risk` as reference metadata only; do not use it as an output trigger by itself.
 - Keep an `anomalies`-only instance in `downgraded_watch` rather than fully downgrading it when the query-shape/resource-pressure signal is strong enough to be capacity-relevant even without current slow SQL, for example:
   - Multiple anomaly rules hit together, such as both full joins and disk temporary tables.
@@ -156,18 +159,21 @@ Actionable high detailed HTML reports:
 - For output-format tests, reuse an existing completed batch/report or saved HTML. Do not rerun full inspection just to test HTML shape.
 - Use `assets/actionable-high-report-template.html` as the source template. Generate escaped section fragments, fill slots, leave optional slots empty when not applicable, and keep the template CSS classes, navigation, and top-level section order. Do not invent one-off HTML/CSS in automation prompts or task scripts.
 - The HTML must be self-contained, UTF-8, inline CSS only, and readable from a local `file://` URL.
-- SQL details use `<details class="sql-details">`; each SQL row is a card with title row plus metric chips. Never render `query_id`, origin, `avg_ms`, `exec_count`, `load`, `rows_examined_avg`, and `lock_time_avg_ms` as one dense line.
+- SQL details use `<details class="sql-details">`; each SQL row is a card with title row plus database/schema/namespace context and metric chips. Never render `query_id`, origin, database context, `avg_ms`, `exec_count`, `load`, `rows_examined_avg`, and `lock_time_avg_ms` as one dense line.
 - HTML slow SQL inclusion is execution-time gated: include a row in `慢 SQL 语句` / `慢日志语句` / `额外慢 SQL 观察` only when `avg_ms > 1000` ms. Other metrics may be shown after the row qualifies, but they must not qualify the row by themselves.
 - Format SQL metrics for scanning: seconds for `avg_ms > 1000`, Chinese `万`/`亿` or separators for large rows, about 3 significant digits for small `load`, and omit missing metrics.
 - Fully render only the top 5 qualifying SQL rows; put the rest in `<details class="more-sql">`. Keep SQL bodies in `<pre><code>` with scrollable height. In `额外慢 SQL 观察`, keep tables compact and put full SQL in row-level `<details>`.
 - SQL bodies must wrap inside their card and must not create page-level horizontal scrolling; preserve content, but prefer readable wrapped SQL over single-line overflow.
 - Header semantics are fixed: `后端原始高危/严重` is backend raw `critical/high` context only; `当前分层` uses `actionable_high`, `downgraded_watch`, and `anomalies_only_observed`, never `watch_high`.
+- Header metrics must show inspection window length and concrete time range in the same `巡检窗口` value, for example `15m；2026-05-22 11:31:37 Asia/Shanghai ~ 2026-05-22 11:52:02 Asia/Shanghai`. Use report fields `inspection_window`, `inspection_window_start(_local)`, and `inspection_window_end(_local)`; for full-batch HTML summarize the earliest successful report window start through the latest successful report window end.
+- When business tags are available, the HTML detailed report should group `actionable_high`, `downgraded_watch`, and observed summaries by tag first, then by severity/impact inside each tag. Preserve `未分组` for missing tags.
+- In HTML detailed reports, do not render a separate `业务分类` summary table in the summary section. Use collapsible tag groups in the detail section so each tag can hide or expand its instances.
 - Sort actionable instances by severity and impact evidence: `critical`, `high`, then promoted `medium`; prefer locks/transactions with impact, qualifying non-collector non-oplog slow SQL, then resource-corroborated anomalies.
 - Each actionable instance includes `报告 ID`, time window when available, trigger reason, relevant host/anomaly metrics, compact evidence, actionable recommendations, and qualifying SQL/fingerprint details when present.
 - Suppress collector/system SQL and MongoDB oplog tail patterns from actionable details. Oplog tails may appear only as folded `oplog_tail_observed` counts under `downgraded_watch 摘要`.
-- Always include `指标说明` defining the report-specific terms and metrics actually used. Cover at least the rendered batch fields, risk-layer terms, slow SQL metrics, resource/anomaly metrics, and downgrade/suppression reason tokens that appear in the report. Do not leave this section as only an `avg_ms` definition. The final chat response after writing HTML should include only the file path, `actionable_high` count, and retrieval limitations.
+- Always include `指标说明` defining the report-specific terms and metrics actually used. Cover at least the rendered batch fields, risk-layer terms, slow SQL metrics, resource/anomaly metrics, and downgrade/suppression reason tokens that appear in the report. Do not leave this section as only an `avg_ms` definition. The final chat response after writing HTML should include a clickable Markdown link to the local HTML file using the absolute path, plus `actionable_high` count and retrieval limitations. Do not return a bare unlinked path when a local HTML file was generated.
 
-Default batch response fields to surface: `batch_id`, `status`, `submitted`, `succeeded`, `failed`, `progress_pct`, `source_progress`, `failed_results`, plus top actionable risk summary only after explicit report follow-up.
+Default batch response fields to surface: `batch_id`, `status`, `submitted`, `succeeded`, `failed`, `progress_pct`, `source_progress`, `business_tag_groups`, `failed_results`, plus top actionable risk summary only after explicit report follow-up.
 
 Recommended batch requests:
 
@@ -260,13 +266,43 @@ Mandatory formatting rules:
 - Include `慢 SQL 模板统计` by default only for rows emitted by the script. Before applying thresholds, suppress collector/system SQL such as `performance_schema`, `agent='perfschema'`, PMM/monitoring collector queries, metadata `SHOW` queries, and MongoDB oplog tail patterns. Then apply the slow SQL output thresholds from the batch-report rules above.
 - If no SQL passes the slow SQL output thresholds, say `无符合输出阈值的业务慢 SQL` and clarify that backend slow-SQL risk may still exist as reference metadata; do not say the backend report has no slow SQL.
 - For Oracle AWR output, every emitted SQL row must show `exec_count` and `avg_ms` before the SQL body. If no SQL passes the default SQL output thresholds, still include one compact `Oracle Top SQL 摘要` line with `query_id`/`exec_count`/`avg_ms` when the report provides it.
-- Do not list every validated endpoint by default. Use exactly `验证：API 巡检链路已通过` unless the user asks for endpoint-level validation details.
+- For Oracle AWR output, use this fixed shape exactly:
+
+```text
+状态：成功 / 部分完成 / 阻塞
+
+结果：
+- Oracle AWR：库=`<db_name>` 实例=`<instance_id>` instance_number=`<instance_number>` db_id=`<db_id>` source_type=`awr` database_type=`oracle` instance_key=`awr:oracle:<instance_id>`
+- AWR窗口：report_start=`<report_start>` [时间段=`<inspection_window_start ~ inspection_window_end>` | 巡检起点=`<report_start>`] 巡检窗口=`<inspection_window>` 报告时间=`<generated_at>` report_id=`<report_id>`
+- 结论：总体风险=`<overall_risk_level>`，命中规则=`<count>`。
+- 关键发现：
+  1. 慢 SQL: risk=... rules=... sql_evidence=...
+  2. 事务风险: risk=... rules=...
+- Oracle Top SQL：
+  1. SQL_ID/模板ID=... 库=... exec_count=... avg_ms=... load=... total_ms=...
+     SQL：
+  ```sql
+  normalized SQL / SQL_ID / fingerprint
+  ```
+  代表SQL：
+  ```sql
+  concrete SQL body when provided by the backend
+  ```
+
+验证：Oracle AWR 巡检链路已通过
+```
+
+- In Oracle AWR output, always include `Oracle AWR` and `AWR窗口` lines, even when some values are `unknown`.
+- Oracle SQL rows must be under `Oracle Top SQL`, not `慢 SQL 模板统计`.
+- If no SQL passes `avg_ms > 1000`, still keep the `Oracle Top SQL` section and include `Oracle Top SQL 摘要` when available.
+- Use the single validation line `验证：Oracle AWR 巡检链路已通过`; do not list `awr-report/list`, `summary`, or `html` endpoints unless the user asks for endpoint validation details.
+- Do not list every validated endpoint by default. For non-Oracle runtime inspections, use exactly `验证：API 巡检链路已通过` unless the user asks for endpoint-level validation details.
 - Do not add output-mode text such as `输出模式=bundle` or `sql_output=problematic` in the default final answer.
 - Omit `文件` unless this turn actually changed a file
 - For pure runtime inspection, do not list skill files or config files in `文件` unless this turn really wrote them
-- For scheduled or all-instance inspection, default `$dbc-skill 全量巡检` means backend batch API, summary only, no SQL expansion, no raw report JSON, and `write_html=false`.
-- For batch polling output, do not list every endpoint or every instance result. Show only `batch_id`, `status`, `submitted`, `succeeded`, `failed`, `progress_pct`, `source_progress`, and up to 3 `failed_results`.
-- If report follow-up is requested after a batch, list `actionable_high` instances first using the composite filtering rules above, then summarize `downgraded_watch` and `anomalies_only_observed` as compact counts. Include raw high-risk count as backend original context, not as the downgraded alert count; expand SQL only for explicitly selected single instances.
+- For scheduled or all-instance inspection, default `$dbc-skill 全量巡检` means backend batch API, summary only, tag-grouped output, no SQL expansion, no raw report JSON, and `write_html=false`.
+- For batch polling output, do not list every endpoint or every instance result. Show only `batch_id`, `status`, `submitted`, `succeeded`, `failed`, `progress_pct`, `source_progress`, `业务分类`/`business_tag_groups`, and up to 3 `failed_results`.
+- If report follow-up is requested after a batch, list `actionable_high` instances grouped by business tag first using the composite filtering rules above, then summarize `downgraded_watch` and `anomalies_only_observed` as compact tag-level counts. Include raw high-risk count as backend original context, not as the downgraded alert count; expand SQL only for explicitly selected single instances.
 
 When the user explicitly asks to see report content, do not stop at `checks`; return either report summary, full report JSON, or HTML according to the requested output mode.
 
@@ -279,9 +315,10 @@ When the user explicitly asks for SQL, SQL详情, 问题 SQL, 慢 SQL 明细, or
 - Do not hide the SQL body behind only `fingerprint`, `query_id`, or section summary.
 - If the report contains `problem_sqls`, show each SQL row in this order when possible:
   1. `模板ID=<query_id or generated id>`
-  2. `avg_ms` / `exec_count` / `load`
-  3. template SQL/fingerprint in a fenced code block
-  4. representative concrete SQL in a fenced code block when the backend provides it
+  2. `库=<database/schema/namespace value or unknown>` plus `schema` / `namespace` / `collection` when provided
+  3. `avg_ms` / `exec_count` / `load`
+  4. template SQL/fingerprint in a fenced code block
+  5. representative concrete SQL in a fenced code block when the backend provides it
 - For Oracle summary output, if no SQL row qualifies for expansion, still mention the top SQL's `exec_count` and `avg_ms` in one compact line when available.
 
 If the user did not ask for SQL, keep the SQL section brief or omit it.

@@ -17,6 +17,7 @@ codex-weekly-plan-*.md
 codex-monthly-submit-*.md
 *.filtered-test.md
 *.skill-test.md
+skills/*/scripts/regression_*.py
 
 # Python/tooling caches
 __pycache__/

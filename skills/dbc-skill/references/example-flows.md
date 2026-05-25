@@ -228,7 +228,8 @@ Default chat summary for batch/scheduled runs should include only:
 - run scope and backend URL
 - submitted / succeeded / failed counts
 - risk distribution
-- top critical/high instances
+- business tag distribution (`business_tag_groups` / `业务分类`) when the backend returns `business_tag`, `business_tags`, `biz_tag`, `biz_tags`, `tag`, or `tags`; use `未分组` when missing
+- top critical/high instances grouped by business tag when tags are available
 - generated summary or index file paths, if files were written
 
 Do not paste per-instance `work-report` output for all discovered instances.

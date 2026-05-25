@@ -17,6 +17,7 @@ Each skill lives in its own directory under `skills/`. The repository root is re
 +-- skills/
     +-- codex-daily-report/
     +-- dbc-skill/
+    +-- init-pro/
     +-- notion-task-manager/
 ```
 
@@ -54,12 +55,30 @@ It supports:
 - Instance discovery and PMM1/PMM3 source disambiguation.
 - MySQL, PostgreSQL, MongoDB, and Oracle AWR inspection surfaces.
 - Batch inspection status polling and report retrieval.
+- Business-tag grouped full-scope summaries and actionable risk output.
+- Actionable-high HTML report helpers with slow SQL context and inspection-window metadata.
 - Local backend target configuration through `config/api-targets.local.json`.
 
 Skill path:
 
 ```text
 skills/dbc-skill/
+```
+
+### init-pro
+
+`init-pro` generates reusable project control-plane constraints for new repositories and major project initialization.
+
+It supports:
+
+- Repository-level agent instructions and control Markdown scaffolds.
+- Project plan, worklog, decision-log, and API/architecture contract templates.
+- Source-of-truth and context-read rules for Codex collaboration.
+
+Skill path:
+
+```text
+skills/init-pro/
 ```
 
 ### notion-task-manager
@@ -95,6 +114,10 @@ Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/s
 ```
 
 ```text
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/init-pro
+```
+
+```text
 Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/notion-task-manager
 ```
 
@@ -103,6 +126,7 @@ Or install manually by copying one skill folder into your Codex skills directory
 ```text
 ~/.codex/skills/codex-daily-report
 ~/.codex/skills/dbc-skill
+~/.codex/skills/init-pro
 ~/.codex/skills/notion-task-manager
 ```
 
@@ -113,6 +137,7 @@ Read each skill's setup reference before enabling automation:
 ```text
 skills/codex-daily-report/references/initial-setup.md
 skills/dbc-skill/config/api-targets.example.json
+skills/init-pro/references/
 skills/notion-task-manager/references/notion-config.example.yaml
 ```
 
@@ -138,6 +163,9 @@ Skill releases use namespaced tags:
 codex-daily-report/v0.1.0
 codex-daily-report/v0.1.1
 dbc-skill/v0.1.0
+dbc-skill/v0.1.1
+dbc-skill/v0.1.2
+init-pro/v0.1.0
 notion-task-manager/v0.1.0
 notion-task-manager/v0.1.1
 ```

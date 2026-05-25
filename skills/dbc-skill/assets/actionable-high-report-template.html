@@ -216,15 +216,39 @@ th {
 }
 details.sql-details,
 details.more-sql,
-details.inline-sql {
+details.inline-sql,
+details.tag-group {
   margin-top: 12px;
 }
 details.sql-details > summary,
 details.more-sql > summary,
-details.inline-sql > summary {
+details.inline-sql > summary,
+details.tag-group > summary {
   cursor: pointer;
   font-weight: 600;
   color: var(--accent);
+}
+details.tag-group {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+  padding: 10px 12px;
+  margin: 14px 0;
+}
+details.tag-group > summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 18px;
+}
+.tag-counts {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tag-group-body {
+  margin-top: 12px;
 }
 .sql-list {
   display: grid;
@@ -295,6 +319,12 @@ details.inline-sql > summary {
   color: #667085;
   font-weight: 600;
 }
+.sql-body-label {
+  margin: 10px 0 0;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+}
 pre {
   max-width: 100%;
   max-height: 360px;
@@ -354,10 +384,8 @@ code {
     <a href="#summary">总体结论</a>
     <a href="#actionable">actionable_high 明细</a>
     ${EXTRA_SQL_NAV}
-    <a href="#downgraded">downgraded_watch 摘要</a>
     ${ORACLE_AWR_NAV}
     <a href="#metrics">指标说明</a>
-    <a href="#next">后续动作建议</a>
   </nav>
   <main>
     <h1>${REPORT_TITLE}</h1>
@@ -378,18 +406,10 @@ code {
       ${ACTIONABLE_HIGH_SECTION}
     </section>
     ${EXTRA_SQL_SECTION}
-    <section id="downgraded">
-      <h2>downgraded_watch 摘要</h2>
-      ${DOWNGRADED_WATCH_SECTION}
-    </section>
     ${ORACLE_AWR_SECTION}
     <section id="metrics">
       <h2>指标说明</h2>
       ${METRICS_GLOSSARY_SECTION}
-    </section>
-    <section id="next">
-      <h2>后续动作建议</h2>
-      ${NEXT_ACTIONS_SECTION}
     </section>
     <div class="report-footer">生成时间：${GENERATED_AT}</div>
   </main>
