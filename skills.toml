@@ -114,3 +114,15 @@ package_formats = [
 ]
 release_tag = "init-pro/v0.1.0"
 notes = "Initial public release with portable CODEX_HOME-based skill script paths."
+
+[skills."book-skill"]
+path = "skills/book-skill"
+version = "0.1.0"
+status = "draft"
+public = true
+package_formats = [
+  "tar.gz",
+  "zip",
+]
+release_tag = "book-skill/v0.1.0"
+notes = "Initial draft release for ebook source-page discovery with EPUB/MOBI prioritization, clickable direct-download lists, and Chrome-based selected-entry downloads."
