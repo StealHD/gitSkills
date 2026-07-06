@@ -1,4 +1,4 @@
 interface:
   display_name: "Book Skill"
-  short_description: "Find ebook versions and direct download links"
-  default_prompt: "Use $book-skill to find ebook versions, compare author/publisher/year/format/size metadata, return clickable direct-download lists, and download selected entries through Chrome when requested."
+  short_description: "Find Anna ebook versions and direct download links"
+  default_prompt: "Use $book-skill to search Anna's Archive by default, compare author/publisher/year/format/size metadata, return clickable direct-download lists, and download selected entries through Chrome when requested."

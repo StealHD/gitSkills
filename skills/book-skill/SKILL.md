@@ -1,22 +1,22 @@
 ---
 name: book-skill
-description: Use when a user asks Codex to find ebook source pages, compare book versions or formats, search Anna's Archive/open catalogs for a book URL, return a clickable direct-download list, or download a selected ebook entry through Chrome while prioritizing EPUB/MOBI and handling multiple editions.
+description: Use when a user asks Codex to find ebook source pages, compare book versions or formats, return Anna's Archive results by default, provide a clickable direct-download list, or download a selected ebook entry through Chrome while prioritizing EPUB/MOBI and handling multiple editions.
 ---
 
 # Book Skill
 
 ## Overview
 
-Find the best matching book records and ebook source pages. Use a verified Anna's Archive
-source host as a metadata or public record discovery source, with EPUB/MOBI preferred when
-identity and source status are suitable.
+Find the best matching book records and ebook source pages. Default to a verified Anna's
+Archive source host for ebook record discovery, with EPUB/MOBI preferred when identity and
+source status are suitable.
 
 
 ## Workflow
 
 1. Parse the request for title, author, language, edition, year, publisher, ISBN, and desired format. Ask a short clarification only when two or more different books are plausible.
-2. Search exact identifiers first: ISBN, exact title plus author, then title plus language/edition. When the user specifically asks for Anna's Archive, select `anna_base_url` using the source-domain routine below, then check `<anna_base_url>/search?q=<url-encoded-query>` as a record-discovery source and follow the Anna's Archive routine below.
-3. Also search source pages when relevant: publisher/author pages, Project Gutenberg, Standard Ebooks, Internet Archive pages, Open Library, national/library catalogs, and retailer preview pages.
+2. Search exact identifiers first: ISBN, exact title plus author, then title plus language/edition. For ebook/source-page requests, select `anna_base_url` using the source-domain routine below and check `<anna_base_url>/search?q=<url-encoded-query>` by default. Skip Anna only when the user explicitly says not to use Anna or asks for non-Anna-only sources.
+3. Also search source pages when relevant: publisher/author pages, Project Gutenberg, Standard Ebooks, Internet Archive pages, Open Library, national/library catalogs, and retailer preview pages. Treat these as supplemental unless the user explicitly excludes Anna or asks for non-Anna-only sources.
 4. Extract candidate facts: title, author, translator/editor, language, year, publisher, edition, ISBN, format, size/page count, source name, record URL, source status, and confidence reason.
 5. Filter obvious mismatches before ranking: wrong title, wrong author, wrong language, unrelated edition, incomplete metadata, or suspicious URL. If no candidate remains after filtering, say no matching record was found; do not fill the result with title-near, author-related, or topic-related books.
 
@@ -56,7 +56,8 @@ Before the first Anna search in a task:
 
 ## Anna's Archive Record-Page Routine
 
-Use this routine when the user provides an Anna's Archive URL, says to use their link, or explicitly asks for Anna's Archive results.
+Use this routine by default for ebook/source-page requests, when the user provides an Anna's
+Archive URL, says to use their link, or explicitly asks for Anna's Archive results.
 
 1. Select `anna_base_url` with the source-domain routine, then search the user query:
    - `<anna_base_url>/search?q=<url-encoded-query>`
