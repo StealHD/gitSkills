@@ -86,6 +86,12 @@ When download entries are requested, return at most one link in each bucket:
 1. `稍快但需排队`: prefer the first visible low-speed partner entry labeled "稍快但需要排队" or equivalent. Use its normal page URL, not a hidden direct file URL.
 2. `无需排队`: prefer the first visible low-speed partner entry labeled "无需排队" or equivalent. Use its normal page URL, not a hidden direct file URL.
 
+These are intermediate entry pages. Do not put an entry-page URL in the `下载` column of a
+download list. The `下载` column must point to the final visible action URL from the entry page.
+Clicking a `下载` hyperlink must directly enter the browser download/save flow or a file response;
+if the click only opens another page that still requires a second click, it is still an `入口页`,
+not a `下载` link.
+
 On Anna record pages, parse the downloads panel rather than guessing:
 
 1. Scope extraction to `#md5-panel-downloads` when present.
@@ -102,45 +108,53 @@ step when available, because it can use the user's real Chrome profile, cookies,
 
 1. When the user asks for a clickable download list, build a `下载列表` table from the best 3-7
    candidate versions. Include enough selection facts in each row: title/edition, author,
-   publisher/year, language, format, size, source status, record page, entry page, and direct
-   download link. If there are no same-book candidates, return one `未找到` row and do not add
+   publisher/year, language, format, size, source status, final download action, entry page, and
+   record page. If there are no same-book candidates, return one `未找到` row and do not add
    unrelated candidates.
 2. For each listed candidate, prefer EPUB/MOBI/AZW and use `@chrome` to open the preferred entry page
    and extract the visible final action link whose label contains `立即下载` (for example
    `📚立即下载`). Do not click it while preparing the list; put that final href behind a short
    Markdown link label such as `[下载](...)`.
-3. Also keep `[入口页](...)` and `[记录页](...)` links in the row. Direct download links may expire, so
-   if `[下载]` fails, the entry page should still let the user retry manually.
-4. If a direct final link cannot be resolved for a candidate, put `未解析` or `需打开入口页` in the
-   direct-download column and still return the clickable entry page.
-5. Visit the `稍快但需排队` and `无需排队` entry URLs with `@chrome` when available before returning
+3. The `[下载]` link must be the final `立即下载` action URL that starts a browser download when
+   clicked. Never use a `/slow_download/...`, `/fast_download/...`, record page, viewer link, or
+   entry page as the `[下载]` target.
+4. Treat "direct download" operationally: clicking `[下载]` should not require the user to land on
+   another web page and click again. If the extracted URL cannot be tied to the visible `立即下载`
+   action, do not output it as `[下载]`.
+5. Also keep `[入口页](...)` and `[记录页](...)` links in the row. Direct download action links may
+   expire, so if `[下载]` fails, the entry page should still let the user retry manually.
+6. If a final `立即下载` URL cannot be resolved for a candidate after Chrome/browser verification,
+   put `未解析` in the `下载` column and explain the blocker in `状态`. Do not put `需打开入口页` or
+   the entry-page link in the `下载` column.
+7. Visit the `稍快但需排队` and `无需排队` entry URLs with `@chrome` when available before returning
    entry-level results.
-6. If ordinary HTTP returns a JavaScript browser check, DDoS-Guard page, CAPTCHA, login wall, or
+8. If ordinary HTTP returns a JavaScript browser check, DDoS-Guard page, CAPTCHA, login wall, or
    anti-bot page, treat that as an automation-only signal and retry with `@chrome` when available.
    Do not treat a challenge page as a working download page.
-7. If `@chrome` reaches the partner download page and a visible final action such as `立即下载`
-   appears, classify that entry as `可访问`. Do not click the final download action until the user
-   chooses an entry or explicitly asks to download.
-8. Classify each entry as one of: `可访问`, `需等待`, `自动化需浏览器验证`, `自动化受阻/可手动打开`,
+9. If `@chrome` reaches the partner download page and a visible final action such as `立即下载`
+   appears, classify the entry page as `可访问`; classify the `下载` column as `直链已解析` only
+   when the final action href has been extracted into `[下载]`. Do not click the final download
+   action until the user chooses an entry or explicitly asks to download.
+10. Classify each entry as one of: `直链已解析`, `可访问`, `需等待`, `自动化需浏览器验证`, `自动化受阻/可手动打开`,
    `受阻`, or `未测试`. Use `自动化受阻/可手动打开` when Codex tools hit a challenge page but the
    URL itself should still be returned for the user to open in their own browser.
-9. Put both entries in the `下载入口` table with clickable labels, access status, the exact blocker
+11. Put both entries in the `下载入口` table with clickable labels, access status, the exact blocker
    seen by Codex tools, the Chrome result when tested, and the next action. Return the entry page
    links for user choice. Do not expose long temporary final-file URLs unless the user explicitly
    asks for copyable direct links; clickable `[下载]` labels are allowed when the user asks for a
    direct-download list.
-10. After the user chooses an entry, use `@chrome` for the final file download when available.
+12. After the user chooses an entry, use `@chrome` for the final file download when available.
    Download only the chosen entry. On the selected entry page, find the visible final action whose
    label contains `立即下载` (for example `📚立即下载`), click it, and wait for Chrome's download
    event or browser download completion signal when available.
-11. Do not rely only on the Chrome plugin's `download` event: some normal Chrome downloads may save
+13. Do not rely only on the Chrome plugin's `download` event: some normal Chrome downloads may save
    successfully without an event being exposed. After clicking `立即下载`, also check the user's
    Downloads directory for a recent file or `.crdownload` matching the title, extension, hash, or
    final-link filename.
-12. Verify the saved response is a file rather than an HTML challenge page by checking the final URL,
+14. Verify the saved response is a file rather than an HTML challenge page by checking the final URL,
    content type, filename or extension, and non-empty size. If Chrome starts the download but the
    tool cannot read the saved path, report `浏览器已开始下载` and keep the entry page available.
-13. Do not click `立即下载` on both entries. Use the second entry only if the user chooses it or if the
+15. Do not click `立即下载` on both entries. Use the second entry only if the user chooses it or if the
    selected entry fails and the user asks to try the other one.
 
 ## Ranking
@@ -203,8 +217,8 @@ are clickable and open the target page.
 
 | 选项 | 版本 | 作者 | 出版/年份 | 语言 | 格式/大小 | 下载 | 入口页 | 记录页 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final direct-download URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <可访问/需等待/自动化受阻/未测试 + note> |
-| 2 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final direct-download URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <why/status> |
+| 1 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final `立即下载` action URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <直链已解析/需等待/自动化受阻/未测试 + note> |
+| 2 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final `立即下载` action URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <why/status> |
 
 下载入口（当只比较同一记录页的两个入口时使用）：
 
@@ -256,4 +270,8 @@ For ambiguous results, keep the same shape and put `需要选择版本` in `推�
 - Do not return every duplicate. Group duplicates by edition/source and show the best representative.
 - Do not force-fill results with unrelated books. If there is no strong same-book match, write
   `未找到匹配记录` instead of listing title-near, author-related, or topic-related records.
+- Do not put entry-page URLs in the `下载` column. `下载` means the final visible `立即下载`
+  action URL; entry pages belong only in the `入口页` column.
+- Do not label a link as `[下载]` if clicking it only opens another page. A valid `[下载]` link must
+  be the click target that directly starts the browser download/save flow or file response.
 - Do not expose private URLs, tokens, cookies, local paths, or session-specific redirect URLs.
