@@ -1,7 +1,7 @@
 interface:
-  display_name: "Codex 日报总结"
-  short_description: "按配置生成日报周报月报并可发送"
-  default_prompt: "Use $codex-daily-report to check the report schedule first, honor runtime output/exclusion configuration, generate daily reports on China workdays, weekly reports on Sunday, monthly reports on the last China workday, and send WeCom when requested."
+  display_name: "Codex 日报与绩效"
+  short_description: "从结构化证据生成并校验日报、周报、月报和绩效"
+  default_prompt: "Use $codex-daily-report to collect turn-level evidence, create only a WorkItem JSON bundle, validate before any Markdown write, aggregate weekly/monthly/performance reports from validated sidecars, render leadership weekly reports with the fixed categorized format and management-priority ordering, preserve explicit weekly revisions, print validated weekly files byte-for-byte when asked to output them, and send only validated daily reports according to the local profile."
 
 policy:
   allow_implicit_invocation: true

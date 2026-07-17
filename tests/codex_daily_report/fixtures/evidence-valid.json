@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "report_date": "2026-07-09",
+  "timezone": "Asia/Shanghai",
+  "records": [
+    {
+      "id": "thread-slow:turn-slow",
+      "thread_id": "thread-slow",
+      "turn_id": "turn-slow",
+      "occurred_at": "2026-07-09T10:00:00+08:00",
+      "cwd": "/workspace/database",
+      "user_text": "日报记录：排查 db-prod-a 上 app.orders 慢 SQL，代表语句 SELECT a.id FROM orders a JOIN order_items b ON a.id=b.order_id。",
+      "result_text": "平均耗时 53.37s，平均扫描 2738 万行，已完成执行计划分析并反馈开发处理。",
+      "tool_evidence": [
+        {
+          "tool_name": "exec_command",
+          "call_id": "call-slow",
+          "input_text": "run inspection",
+          "output_text": "db-prod-a app.orders avg=53.37s rows_examined=27380000"
+        }
+      ],
+      "source_kind": "explicit_record",
+      "candidate_reason": "explicit_marker",
+      "excluded_reason": ""
+    },
+    {
+      "id": "thread-slow:turn-env",
+      "thread_id": "thread-slow",
+      "turn_id": "turn-env",
+      "occurred_at": "2026-07-09T10:15:00+08:00",
+      "cwd": "/workspace/database",
+      "user_text": "为继续慢 SQL 排查，将巡检后端从测试配置切回生产配置。",
+      "result_text": "巡检链路恢复，作为 db-prod-a 慢 SQL 排查的辅助动作。",
+      "tool_evidence": [],
+      "source_kind": "session",
+      "candidate_reason": "work_cwd",
+      "excluded_reason": ""
+    },
+    {
+      "id": "thread-archive:turn-archive",
+      "thread_id": "thread-archive",
+      "turn_id": "turn-archive",
+      "occurred_at": "2026-07-09T11:00:00+08:00",
+      "cwd": "/workspace/database",
+      "user_text": "评估 audit.events 表约 866 万行历史数据归档，窗口为 created_at < 2025-01-01。",
+      "result_text": "完成归档方案评估，明确按 created_at 分段、分页、小批提交、低峰执行，并监控锁等待和 IO 峰值；方案已反馈。",
+      "tool_evidence": [],
+      "source_kind": "session",
+      "candidate_reason": "technical_object",
+      "excluded_reason": ""
+    }
+  ]
+}

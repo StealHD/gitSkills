@@ -193,6 +193,12 @@ def package_map(skill):
             rel = file_path.relative_to(overlay_root).as_posix()
             result[rel] = file_path
 
+    excludes = skill.get("package_exclude_globs", [])
+    result = {
+        rel: path
+        for rel, path in result.items()
+        if not matches_any(rel, excludes) and not matches_any(Path(rel).name, excludes)
+    }
     return dict(sorted(result.items()))
 
 

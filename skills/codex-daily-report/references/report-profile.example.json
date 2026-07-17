@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "output_root": "<configure: absolute report output root>",
+  "include_markers": [
+    "日报记录",
+    "写到今天日报"
+  ],
+  "include_tail_markers": [
+    "今天日报我还做了这个"
+  ],
+  "include_marker_prefix_chars": 120,
+  "scope_override_patterns": [
+    "今天只做了这个",
+    "只保留",
+    "不要这条"
+  ],
+  "scope_override_max_chars": 500,
+  "work_cwd_patterns": [],
+  "exclude_cwd_patterns": [],
+  "work_keywords": [],
+  "exclude_turn_patterns": [],
+  "report_maintenance_patterns": [],
+  "submitted_exclude_patterns": [],
+  "object_corrections": [],
+  "scope_notes": [],
+  "send_policy": {
+    "daily": true,
+    "weekly": false,
+    "monthly": false,
+    "performance": false
+  },
+  "performance": {
+    "score_mode": "pending"
+  },
+  "wecom": {
+    "webhook_file": "<configure: absolute local secret file>"
+  }
+}

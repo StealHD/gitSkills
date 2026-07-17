@@ -23,6 +23,31 @@ sync_exclude_globs = [
   "*.local.json",
   "**/*.local.json",
 ]
+package_exclude_globs = [
+  ".DS_Store",
+  "**/.DS_Store",
+  "*.local.*",
+  "**/*.local.*",
+  "*.local.json",
+  "**/*.local.json",
+  "__pycache__/**",
+  "**/__pycache__/**",
+  "*.pyc",
+  "**/*.pyc",
+  "tests/**",
+  "**/tests/**",
+  "test_*.py",
+  "**/test_*.py",
+  "codex-session-report-*.md",
+  "codex-*-submit-*.md",
+  "codex-weekly-plan-*.md",
+  "codex-performance-kpi-*.md",
+  "codex-evidence-*.json",
+  "codex-work-items-*.json",
+  "codex-run-state-*.json",
+  "codex-weekly-overrides-*.json",
+  "codex-performance-evidence-*.json",
+]
 forbidden_package_globs = [
   ".DS_Store",
   "**/.DS_Store",
@@ -35,10 +60,15 @@ forbidden_package_globs = [
   "*.skill-test.md",
   "regression_*.py",
   "**/regression_*.py",
-  "*-report-*.md",
-  "__pycache__/*",
-  "**/__pycache__/*",
-  "*.pyc",
+  "codex-session-report-*.md",
+  "codex-*-submit-*.md",
+  "codex-weekly-plan-*.md",
+  "codex-performance-kpi-*.md",
+  "codex-evidence-*.json",
+  "codex-work-items-*.json",
+  "codex-run-state-*.json",
+  "codex-weekly-overrides-*.json",
+  "codex-performance-evidence-*.json",
 ]
 forbidden_init_patterns = [
   "codex-session-report-[0-9]{4}-[0-9]{2}-[0-9]{2}",
@@ -68,15 +98,15 @@ notes = "Patch release synchronized from the deployed maintenance version."
 [skills."codex-daily-report"]
 path = "skills/codex-daily-report"
 maintenance_path = "/Users/stealmac/.codex/skills/codex-daily-report"
-version = "0.1.1"
+version = "0.2.0"
 status = "published"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "codex-daily-report/v0.1.1"
-notes = "Packaging-only release adding a zip artifact. Release control must not edit the skill files."
+release_tag = "codex-daily-report/v0.2.0"
+notes = "Structured evidence and WorkItem pipeline with validated leadership weekly reports, atomic persistence, explicit revision sidecars, and guarded daily publishing."
 
 [skills."dbc-skill"]
 path = "skills/dbc-skill"

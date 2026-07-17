@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "report_date": "2026-07-09",
+  "items": [
+    {
+      "id": "slow-sql-db-prod-a",
+      "object_key": "db-prod-a/app.orders",
+      "category": "slow_sql",
+      "objective": "定位主要慢 SQL 并反馈优化方向",
+      "evidence_refs": ["thread-slow:turn-slow", "thread-slow:turn-env"],
+      "key_facts": [
+        {"name": "instance", "value": "db-prod-a", "source_ref": "thread-slow:turn-slow"},
+        {"name": "table", "value": "app.orders", "source_ref": "thread-slow:turn-slow"},
+        {"name": "avg_latency", "value": "53.37s", "source_ref": "thread-slow:turn-slow"}
+      ],
+      "supporting_actions": ["将误挂测试配置的巡检后端切回生产链路"],
+      "outcome": "已完成执行计划分析并反馈开发处理",
+      "status": "handed_off",
+      "follow_up": "等待开发回归验证耗时",
+      "submitted_text": "db-prod-a 慢 SQL 排查：app.orders 关联查询平均耗时 53.37s、扫描约 2738 万行，已完成执行计划分析并反馈开发处理。"
+    },
+    {
+      "id": "archive-audit-events",
+      "object_key": "audit.events/archive",
+      "category": "archive_assessment",
+      "objective": "评估历史数据归档方案与执行边界",
+      "evidence_refs": ["thread-archive:turn-archive"],
+      "key_facts": [
+        {"name": "table", "value": "audit.events", "source_ref": "thread-archive:turn-archive"},
+        {"name": "rows", "value": "866 万行", "source_ref": "thread-archive:turn-archive"},
+        {"name": "window", "value": "created_at < 2025-01-01", "source_ref": "thread-archive:turn-archive"}
+      ],
+      "supporting_actions": ["确认分段、分页、小批提交和低峰窗口", "将锁等待与 IO 峰值作为执行边界"],
+      "outcome": "完成风险评估并将方案反馈相关方",
+      "status": "analysis_complete",
+      "follow_up": "按确认窗口安排实际归档",
+      "submitted_text": "audit.events 归档评估：围绕约 866 万行历史数据明确按 created_at 分段、分页、小批提交和低峰执行，并以锁等待、IO 峰值作为边界，方案已反馈。"
+    }
+  ]
+}

@@ -88,6 +88,28 @@ def last_workday_of_month(day: date, policy: WorkdayPolicy) -> date:
         cursor -= timedelta(days=1)
 
 
+def last_workday_of_week(day: date, policy: WorkdayPolicy) -> date:
+    cursor = day + timedelta(days=6 - day.weekday())
+    week_start = cursor - timedelta(days=6)
+    while cursor >= week_start:
+        is_workday, _ = check_workday(cursor, policy, include_rest_day=False)
+        if is_workday:
+            return cursor
+        cursor -= timedelta(days=1)
+    return week_start
+
+
+def previous_workdays(day: date, policy: WorkdayPolicy, count: int) -> list[date]:
+    result: list[date] = []
+    cursor = day - timedelta(days=1)
+    while len(result) < count:
+        is_workday, _ = check_workday(cursor, policy, include_rest_day=False)
+        if is_workday:
+            result.append(cursor)
+        cursor -= timedelta(days=1)
+    return result
+
+
 def main() -> int:
     args = parse_args()
     day = date.fromisoformat(args.date)
@@ -101,13 +123,23 @@ def main() -> int:
     }
     if args.schedule:
         month_workday = last_workday_of_month(day, policy)
+        week_workday = last_workday_of_week(day, policy)
+        monthly_draft_days = previous_workdays(month_workday, policy, 2)
+        run_monthly_draft = day in monthly_draft_days
+        run_monthly_final = day == month_workday
         payload["schedule"] = {
             "run_daily_report": is_workday,
-            "run_weekly_report": day.weekday() == 6,
-            "run_monthly_report": day == month_workday,
-            "weekly_report_reason": "sunday" if day.weekday() == 6 else "",
-            "monthly_report_reason": "last_china_workday_of_month" if day == month_workday else "",
+            "run_weekly_report": day == week_workday,
+            "run_monthly_draft": run_monthly_draft,
+            "run_monthly_final": run_monthly_final,
+            "run_monthly_report": run_monthly_final,
+            "run_performance_report": run_monthly_final,
+            "weekly_report_reason": "last_china_workday_of_week" if day == week_workday else "",
+            "monthly_report_reason": "last_china_workday_of_month" if run_monthly_final else ("monthly_draft_window" if run_monthly_draft else ""),
+            "performance_report_reason": "last_china_workday_of_month" if run_monthly_final else "",
+            "last_workday_of_week": week_workday.isoformat(),
             "last_workday_of_month": month_workday.isoformat(),
+            "monthly_draft_workdays": [value.isoformat() for value in sorted(monthly_draft_days)],
         }
     print(json.dumps(payload, ensure_ascii=False))
     if args.require_workday and not is_workday:

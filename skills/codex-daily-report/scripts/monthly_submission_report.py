@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from reporting.common import atomic_write_text, load_json
+from reporting.contracts import validate_submitted_text
+
 
 WEEKDAYS_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -46,6 +49,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Override policy retention month count.",
     )
+    parser.add_argument("--profile", help="Runtime profile used by the shared submission validator.")
     return parser.parse_args()
 
 
@@ -158,6 +162,13 @@ def main() -> int:
         }, ensure_ascii=False))
         return 0
 
+    content = read_content(args)
+    profile = load_json(args.profile) if args.profile else {}
+    findings = validate_submitted_text(content, profile, "daily")
+    if findings:
+        print(json.dumps({"saved": False, "validation_errors": findings}, ensure_ascii=False))
+        return 2
+
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -170,8 +181,8 @@ def main() -> int:
         existing = title + "\n" + existing
 
     heading = date_heading(day, reason)
-    updated = replace_or_append_entry(existing, heading, read_content(args), day)
-    target.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    updated = replace_or_append_entry(existing, heading, content, day)
+    atomic_write_text(target, updated.rstrip() + "\n")
 
     removed = prune_old_months(output_dir, policy, day)
     print(json.dumps({

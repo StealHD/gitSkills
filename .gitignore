@@ -15,6 +15,13 @@ codex-daily-submit-*.md
 codex-weekly-submit-*.md
 codex-weekly-plan-*.md
 codex-monthly-submit-*.md
+codex-performance-submit-*.md
+codex-performance-kpi-*.md
+codex-evidence-*.json
+codex-work-items-*.json
+codex-run-state-*.json
+codex-weekly-overrides-*.json
+codex-performance-evidence-*.json
 *.filtered-test.md
 *.skill-test.md
 skills/*/scripts/regression_*.py
@@ -26,5 +33,6 @@ __pycache__/
 
 # Local environment
 .env
+*.local.*
 .venv/
 venv/

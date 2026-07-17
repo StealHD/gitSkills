@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "report_date": "2026-07-09",
+  "items": [
+    {
+      "id": "archive-one",
+      "object_key": "audit.events/archive",
+      "category": "archive_assessment",
+      "objective": "评估历史数据归档方案与执行边界",
+      "evidence_refs": ["thread-archive:turn-archive"],
+      "key_facts": [{"name": "table", "value": "audit.events", "source_ref": "thread-archive:turn-archive"}],
+      "supporting_actions": [],
+      "outcome": "完成风险评估",
+      "status": "analysis_complete",
+      "follow_up": "",
+      "submitted_text": "audit.events 归档方案评估完成。"
+    },
+    {
+      "id": "archive-two",
+      "object_key": "audit.events/archive",
+      "category": "archive_assessment",
+      "objective": "评估历史数据归档方案与执行边界",
+      "evidence_refs": ["thread-archive:turn-archive"],
+      "key_facts": [{"name": "window", "value": "created_at < 2025-01-01", "source_ref": "thread-archive:turn-archive"}],
+      "supporting_actions": ["确认低峰窗口"],
+      "outcome": "确认执行参数",
+      "status": "analysis_complete",
+      "follow_up": "",
+      "submitted_text": "audit.events 归档参数确认完成。"
+    }
+  ]
+}

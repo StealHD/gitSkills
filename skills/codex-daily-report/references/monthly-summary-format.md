@@ -1,43 +1,8 @@
-# Monthly Summary Format
+# Monthly Report Contract
 
-Use this when the user asks for 月报, 本月总结, or when automation reaches the last China workday of the month.
+月报由 `reportctl.py aggregate --type monthly` 从目标月已验证 WorkItem 生成。
 
-## Goal
-
-Produce a short business-facing monthly summary from the month daily submitted report. Prefer `codex-daily-submit-YYYY-MM.md` as source evidence. Do not reconstruct from raw Codex sessions unless the daily submitted report is missing and the user explicitly asks for reconstruction.
-
-## Style
-
-- Default monthly summary has 4-6 item-paragraphs.
-- Merge by month-level themes, not by day.
-- Keep database evidence when available: instance/server, database/schema, table/object, SQL fragment or SQL_ID, and status.
-- Use research tone for investigation and verification work: `排查显示`, `完成验证`, `方案推进`, `待继续确认`.
-- Do not include Codex/session/tool counts.
-- Include a `下月计划` section only when the user asks for planning or the current month contains clear follow-up work.
-
-## Template
-
-```markdown
-# YYYY-MM 月报
-
-第一项：主题标题
-本月推进内容。保留关键实例/库/表/SQL证据，说明当前处理状态或反馈结果。
-
-第二项：主题标题
-本月推进内容。保留关键实例/库/表/SQL证据，说明当前处理状态或反馈结果。
-```
-
-## Monthly Plan Template
-
-```markdown
-下月计划
-
-第一项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
-
-第二项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
-
-第三项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
-```
+- 按对象与目标归并，默认展示最高价值的 4–6 项；证据不足时不凑数。
+- 月末前两个中国工作日可覆盖生成草稿，最后一个中国工作日覆盖终稿。
+- 输出 `codex-monthly-submit-YYYY-MM.md`；不得改写日报根文件或每日 sidecar。
+- 月报默认只保存，不发送企业微信。
