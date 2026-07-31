@@ -1,0 +1,31 @@
+{
+  "variants": ["no-skill", "init-pro-v0.2", "init-pro-v0.3-candidate"],
+  "fresh_agent_required": true,
+  "prompt": "prompt.md",
+  "checks": [
+    {
+      "id": "reuse-authority",
+      "description": "Selects existing sources instead of proposing a second document suite."
+    },
+    {
+      "id": "detect-conflicts",
+      "description": "Finds product-mode, default-read, decision, and completion-evidence conflicts without reporting semantic PASS."
+    },
+    {
+      "id": "minimal-context",
+      "description": "Does not read every control document for an ordinary small change."
+    },
+    {
+      "id": "impact-review",
+      "description": "Maps API and architecture changes to the corresponding authority and decision review."
+    },
+    {
+      "id": "read-only-clean",
+      "description": "Leaves git status clean for the assessment task."
+    },
+    {
+      "id": "single-compact-log",
+      "description": "For a separate persistent-change trial, produces no more than one root-Agent compact entry."
+    }
+  ]
+}

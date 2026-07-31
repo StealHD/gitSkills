@@ -1,99 +1,99 @@
-# Control File Patterns
+# Control Mapping Patterns
 
-## Generic Control Logic
+## Topic ownership
 
-Use these constraints as the reusable core when creating a new project:
+`project-controls.json` maps topics to repository-owned sources; filenames below are common defaults, not mandatory slots.
 
-1. Context first: describe the product/domain problem before implementation details.
-2. Clear phase boundary: state what the current phase does and does not deliver.
-3. Layer separation: keep acquisition/integration, domain logic, rules, reports, storage, and API/interface orchestration separate.
-4. Standard model: upstream/runtime source fields must enter through an adapter or boundary layer before business logic consumes them.
-5. Capability and degrade: unsupported or unconfirmed behavior must be explicit, queryable, and traceable; do not silently skip it.
-6. Evidence: conclusions, reports, and recommendations must reference rules and evidence.
-7. Config-first rules: thresholds, risk levels, feature flags, and output controls belong in the primary YAML config unless hard-coded behavior is unavoidable.
-8. One source of truth: each control topic has exactly one authoritative file.
-9. Minimal context: agents start from a small default read set and expand only by task.
-10. Compact worklog: every task appends a concise operational record to `WORKLOG.md`.
+| Topic | Typical authority | Required by |
+|---|---|---|
+| `instructions` | `AGENTS.md` | every profile |
+| `phase` | `PLAN.md` | every profile |
+| `interface` | OpenAPI, API/CLI/library contract | backend, cli, library |
+| `architecture` | architecture contract | backend, cli, library |
+| `decisions` | `DECISION_LOG.md` or ADR directory | backend, cli, library |
+| `context` | normally the same `AGENTS.md` | defaults from instructions |
+| `capabilities` | an existing machine source consumed by code/tests | optional, evidence required |
 
-## Unique Source Of Truth Map
+Each topic has one authority. Other documents either link to it, are explicitly maintained references, or are archive candidates. Do not copy the full current rule into several files.
 
-Recommended defaults:
+`instructions` and `context` may intentionally share `AGENTS.md`. Other topics should not share one path: combined sources make change impact and ownership ambiguous.
 
-| Topic | File |
+Treat path identity as portable, not as a host-specific spelling detail. Use NFC Unicode plus casefold collision checks, and reject distinct mapped names that resolve to the same existing inode. This prevents `WORKLOG.md`/`worklog.md` or hardlink aliases from crossing authority boundaries on macOS and Windows.
+
+## Mapping review
+
+For each candidate from `audit_project_controls.py`, review:
+
+1. Does code, CI, or a documented workflow consume it?
+2. How often and how recently was it maintained?
+3. Which files changed with it, and is that evidence causal or merely correlated?
+4. Does it describe current fact, desired target, historical reason, or an obsolete model?
+5. Is another file already expressing the same topic?
+
+Select one authority; label the remainder as reference/archive candidates. The audit script deliberately never emits an `authoritative` decision.
+
+## Profile shape
+
+| Profile | Required mapped topics |
 |---|---|
-| Overall goal and hard constraints | `AGENTS.md` |
-| Current phase and implementation order | `PLAN.md` |
-| Public API, CLI, event, or module contract | `API_CONTRACT.md` |
-| Layering and responsibility boundaries | `ARCHITECTURE_CONTRACT.md` |
-| Runtime source or adapter boundaries | optional `DATASOURCE_ADAPTER_CONTRACT.md` or domain-specific equivalent |
-| Rule meaning and threshold defaults | optional `RULES_SPEC.md` plus primary YAML config |
-| Report or output shape | optional `REPORT_CONTRACT.md` |
-| Decision reasons | `DECISION_LOG.md` |
-| Context reading strategy | `CONTEXT_READ_RULES.md` |
-| Execution history | `WORKLOG.md` |
-| Editable defaults | primary YAML config such as `project-defaults.yaml` |
+| `minimal` | instructions, phase |
+| `backend` | instructions, phase, interface, architecture, decisions |
+| `cli` | instructions, phase, interface, architecture, decisions |
+| `library` | instructions, phase, interface, architecture, decisions |
 
-Do not duplicate the same rule across several files. Keep the current rule in its source file and put the reason for the change in `DECISION_LOG.md`.
+Choose a profile from the public product boundary, not the programming language. A worker without a stable HTTP API can use `minimal` plus a real named domain topic instead of pretending an API contract exists.
 
-## Default Read Scope
+## Current, planned, and historical meaning
 
-For most implementation tasks, agents should read:
+- Put current phase and non-goals in the `phase` authority.
+- Put current public semantics in `interface` and responsibility/dependency boundaries in `architecture`.
+- Put accepted reasons and supersession history in `decisions`.
+- Do not infer that an interface is enabled merely because code or a contract exists.
+- During Agent semantic review, classify each capability as `core | compatibility | disabled | planned`.
+- A planned target must not be worded as an already verified current fact.
 
-1. `PLAN.md`
-2. `API_CONTRACT.md`
-3. primary YAML config
-4. current task-related code files
-5. current task-related tests
+## Context routing
 
-Avoid by default:
+Keep the routing table close to repository instructions:
 
-1. virtual environments
-2. package caches
-3. build outputs
-4. `.env` and secrets files
-5. local agent settings
-6. `archive/**`
-7. unrelated Markdown files
-8. mostly empty package marker files such as many `__init__.py`
+1. Read applicable root and scoped `AGENTS.md` once.
+2. Read the phase authority only when task scope or phase matters.
+3. Use topic `watch` globs and task boundaries to select interface, architecture, or decision context.
+4. Expand to historical/reference documents only when a conflict or reason must be resolved.
+5. Exclude secrets, generated output, caches, logs, and archives by default.
 
-## WORKLOG Format
+Large repositories should add short nested `AGENTS.md` files for local constraints. Do not clone a repository-wide context manual into every directory.
 
-Keep the append template unchanged unless the repository has a strong reason to add fields:
+## Structural gate versus semantic review
 
-```md
-### YYYY-MM-DD HH:MM AgentName
-- 任务：一句话说明当前任务
-- 读取文件：列出关键控制文件、代码文件、测试文件
-- 修改文件：列出本次实际修改的文件
-- 执行验证：列出关键命令、测试、接口验证
-- 结果：说明完成了什么
-- 未解决问题：如无则写“无”
-- 控制面变更：如无则写“无”；如有，写明更新了哪些控制文件以及原因
-```
+The deterministic validator checks schema, safe paths, required topics, source existence/type, instructions links, worklog invariants, and diff-aware `watch` coverage. It returns `STRUCTURAL_PASS`, never a broad semantic `PASS`.
 
-## Final Response Format
+The Agent then reviews cross-source meaning with evidence:
 
-Default compact response:
+- phase and product model agree;
+- default reading rules do not conflict;
+- major API/architecture changes have decision coverage;
+- completed work has successful validation evidence;
+- incomplete/interrupted evidence is not presented as complete;
+- capability status is explicit;
+- old references are not shadow truth sources.
 
-```md
-状态：成功 / 部分完成 / 阻塞
-结果：一句话说明做成了什么
-验证：测试是否通过，接口是否验证
-阻塞：如果有，列 1~3 条；如果没有可省略
-文件：只列修改过的关键文件路径，最多 8 个
-```
+Cite files and commits. Mark inference as inference. Do not place non-deterministic LLM judgment in a CI required check.
 
-## Customization Checklist
+## Adoption and write safety
 
-Before handing off a generated scaffold, replace placeholders for:
+- Existing sources are `managed=false` and remain byte-for-byte unchanged.
+- A missing `managed=true` file requires final domain-specific content in the reviewed proposal.
+- bootstrap also requires final content; no generic scaffold-then-rewrite sequence.
+- dry-run and apply are bound by a SHA-256 over desired content and prior existence, type, content, and mode.
+- Any change after preview requires a new plan.
+- No force overwrite or implicit application-config migration exists.
+- Existing legacy WORKLOG text is never silently parsed or rewritten by adopt. Use the separately approved `worklogctl import-legacy` archive-only transaction.
 
-1. project name
-2. domain statement
-3. current phase
-4. delivery scope and non-goals
-5. primary stack
-6. runtime sources and reference sources
-7. public interface type
-8. default config filename
-9. capability/degrade vocabulary
-10. first implementation priorities
+## WORKLOG boundary
+
+Append one compact entry only for a persistent repository change, an important decision, or an unresolved risk. Do not log read-only questions, reviews, no-ops, status checks, or work blocked before mutation. The root Agent owns one entry per user task; subagents provide evidence to that entry rather than writing their own.
+
+Required fields are `task_id`, `status`, `result`, `validation`, `unresolved`, and `control_topics`; `commit` and `pr` are optional. Do not repeat a full changed-file list that Git can derive. Rotation moves the oldest root entry into its monthly archive and removes it from the root.
+
+The active archive namespace contains only direct `YYYY-MM.md` compact logs. Preserve raw free-form history byte-for-byte under a non-overlapping sibling such as `archive/legacy-worklog`; archives are excluded from default context and are read only for an explicit history task.

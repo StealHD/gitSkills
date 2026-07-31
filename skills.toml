@@ -105,15 +105,15 @@ notes = "Patch release adding Oracle AWR output shape, business-tag grouping, fu
 [skills."init-pro"]
 path = "skills/init-pro"
 maintenance_path = "/Users/stealmac/.codex/skills/init-pro"
-version = "0.1.0"
+version = "0.3.1"
 status = "published"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "init-pro/v0.1.0"
-notes = "Initial public release with portable CODEX_HOME-based skill script paths."
+release_tag = "init-pro/v0.3.1"
+notes = "Hardens schema-v3 path identity, compact WORKLOG validation, crash recovery, and explicit legacy archive migration."
 
 [skills."book-skill"]
 path = "skills/book-skill"

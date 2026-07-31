@@ -1,322 +1,649 @@
 #!/usr/bin/env python3
-"""Validate an init-pro scaffold and write a visual Markdown report."""
+"""Validate init-pro v0.3 structure and deterministic diff-review gates."""
 
 from __future__ import annotations
 
 import argparse
-import datetime as dt
-from dataclasses import dataclass
-from pathlib import Path
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import subprocess
+import sys
+from typing import Any
+
+sys.dont_write_bytecode = True
+
+from project_controls_common import (
+    ControlError,
+    PROFILE_TOPICS,
+    PROFILES,
+    SCHEMA_VERSION,
+    canonical_relative,
+    normalize_manifest_schema,
+    parse_json_object,
+    parse_worklog_fences,
+    path_within,
+    paths_overlap,
+    portable_path_key,
+    read_regular_bytes,
+    read_utf8_regular,
+    resolve_project_root,
+    reject_existing_path_aliases,
+    scan_worklog_archive,
+    sensitive_codes,
+    stat_path_kind,
+    target_without_symlinks,
+    has_compact_worklog_signature,
+    validate_worklog_entry,
+    write_text_anchored,
+)
 
 
-REQUIRED_FILES = [
-    "AGENTS.md",
-    "PLAN.md",
-    "API_CONTRACT.md",
-    "ARCHITECTURE_CONTRACT.md",
-    "DECISION_LOG.md",
-    "CONTEXT_READ_RULES.md",
-    "WORKLOG.md",
-]
+class UsageError(ValueError):
+    """Raised for CLI or path-safety errors (exit 2)."""
 
 
-CHECKS: dict[str, list[tuple[str, list[str]]]] = {
-    "AGENTS.md": [
-        ("compact final response format", ["默认回复格式", "状态：成功 / 部分完成 / 阻塞"]),
-        ("control-file maintenance rule", ["控制文件维护规则", "控制面发生变化"]),
-        ("unique source-of-truth map", ["控制文件唯一真源", "DECISION_LOG.md"]),
-        ("default read scope", ["Agent 默认读取范围", "PLAN.md", "API_CONTRACT.md"]),
-    ],
-    "PLAN.md": [
-        ("default startup read scope", ["Agent 开工前默认读取", "API_CONTRACT.md"]),
-        ("implementation hard constraints", ["当前实现强约束", "capability / degrade"]),
-        ("test order", ["建议测试顺序"]),
-        ("visual validation command", ["执行后可视化校验", "validate_project_controls.py"]),
-    ],
-    "API_CONTRACT.md": [
-        ("capability/degrade response rule", ["capability / degrade"]),
-        ("error contract", ["错误响应合同", "是否可重试"]),
-        ("compatibility contract", ["兼容性合同", "breaking change"]),
-        ("idempotency contract", ["幂等性合同", "幂等键"]),
-        ("background task contract", ["后台任务合同", "任务 ID", "重试策略"]),
-    ],
-    "ARCHITECTURE_CONTRACT.md": [
-        ("layering", ["默认分层", "Service 层", "Adapter / Integration 层"]),
-        ("forbidden coupling", ["禁止事项", "入口层"]),
-        ("extension rule", ["扩展原则"]),
-    ],
-    "DECISION_LOG.md": [
-        ("decision format", ["决策记录格式", "影响范围", "后续待验证事项"]),
-        ("initial decision", ["D001", "初始化控制面"]),
-    ],
-    "CONTEXT_READ_RULES.md": [
-        ("default required files", ["默认必读文件", "PLAN.md", "API_CONTRACT.md"]),
-        ("default avoid list", ["默认不需要读取的文件", "archive/**", ".env"]),
-        ("api task read strategy", ["API / 接口任务"]),
-        ("adapter task read strategy", ["Adapter / 外部集成任务"]),
-        ("rules task read strategy", ["规则 / 阈值 / 状态口径任务"]),
-        ("output task read strategy", ["输出 / 报告 / 返回结构任务"]),
-        ("storage/background task read strategy", ["存储 / 后台任务任务"]),
-        ("frontend task read strategy", ["前端 / 页面任务"]),
-    ],
-    "WORKLOG.md": [
-        ("append template", ["追加记录模板", "控制面变更"]),
-        ("initial scaffold record", ["初始化项目控制面约束文件"]),
-    ],
-}
-
-
-CONFIG_CHECKS = [
-    ("phase", ["current_phase"]),
-    ("capability degrade", ["capability_degrade_enabled"]),
-    ("evidence", ["evidence_required"]),
-    ("capabilities", ["capabilities", "allowed_statuses"]),
-    ("compact output", ["output", "concise_agent_response"]),
-]
-
-
-SCENARIOS = [
-    ("Bug fix / internal refactor", "WORKLOG.md only"),
-    ("New FastAPI endpoint", "API_CONTRACT.md + WORKLOG.md"),
-    ("Breaking API change", "API_CONTRACT.md + DECISION_LOG.md + WORKLOG.md"),
-    ("New adapter / external system", "ARCHITECTURE_CONTRACT.md + primary YAML + DECISION_LOG.md + WORKLOG.md"),
-    ("Rule / threshold meaning change", "primary YAML + DECISION_LOG.md + WORKLOG.md"),
-    ("Output shape change", "API_CONTRACT.md + DECISION_LOG.md + WORKLOG.md"),
-    ("Background task / retry / timeout", "API_CONTRACT.md + ARCHITECTURE_CONTRACT.md + primary YAML + DECISION_LOG.md + WORKLOG.md"),
-    ("Context read strategy change", "CONTEXT_READ_RULES.md + DECISION_LOG.md + WORKLOG.md"),
-    ("Phase / stack / hard constraint change", "AGENTS.md or PLAN.md + DECISION_LOG.md + WORKLOG.md"),
-]
-
-
-@dataclass
-class Finding:
-    file: str
-    check: str
-    status: str
-    detail: str
-
-
-def read_text(path: Path) -> str:
+def _validate_relative(value: object, label: str) -> str:
     try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return path.read_text(errors="replace")
+        return canonical_relative(value, label)
+    except ControlError as exc:
+        raise UsageError(exc.detail) from exc
 
 
-def has_all(text: str, patterns: list[str]) -> bool:
-    return all(pattern in text for pattern in patterns)
+def _path_within(child: str, parent: str) -> bool:
+    return path_within(child, parent)
 
 
-def validate(root: Path, primary_config: str) -> list[Finding]:
-    findings: list[Finding] = []
+def _paths_overlap(left: str, right: str) -> bool:
+    return paths_overlap(left, right)
 
-    for filename in REQUIRED_FILES:
-        path = root / filename
-        if not path.exists():
-            findings.append(Finding(filename, "file exists", "FAIL", "missing required control file"))
+
+def _project_root(value: str) -> Path:
+    try:
+        return resolve_project_root(value)
+    except ControlError as exc:
+        raise UsageError(exc.detail) from exc
+
+
+def _target(root: Path, relative: str, label: str = "path") -> Path:
+    try:
+        return target_without_symlinks(root, relative, label)
+    except ControlError as exc:
+        raise UsageError(exc.detail) from exc
+
+
+def _finding(code: str, severity: str, message: str, *, topic: str | None = None, path: str | None = None) -> dict[str, str]:
+    value = {"code": code, "severity": severity, "message": message}
+    if topic is not None:
+        value["topic"] = topic
+    if path is not None:
+        value["path"] = path
+    return value
+
+
+def _load_manifest(root: Path, relative: str) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    path = _target(root, relative, "manifest")
+    try:
+        kind = stat_path_kind(path, "manifest")
+    except ControlError as exc:
+        if exc.code == "missing_path":
+            return None, [_finding("manifest.missing", "error", "mapped manifest does not exist", path=relative)]
+        raise UsageError(exc.detail) from exc
+    if kind != "file":
+        return None, [_finding("manifest.type", "error", "manifest must be a regular file", path=relative)]
+    try:
+        value = parse_json_object(read_utf8_regular(path, "manifest"), "manifest")
+    except ControlError as exc:
+        if exc.code not in {"invalid_utf8", "invalid_json"}:
+            raise UsageError(exc.detail) from exc
+        return None, [_finding("manifest.invalid_json", "error", f"manifest is not valid UTF-8 JSON: {exc.detail}", path=relative)]
+    return dict(value), []
+
+
+def _normalize_manifest(root: Path, manifest: dict[str, Any], manifest_path: str) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    findings: list[dict[str, str]] = []
+    for key in sorted(set(manifest) - {"init_pro", "topics", "worklog"}):
+        findings.append(
+            _finding(
+                "manifest.unknown_key",
+                "error",
+                f"unsupported top-level key: {key}",
+                path=manifest_path,
+            )
+        )
+    init_pro = manifest.get("init_pro")
+    topics_raw = manifest.get("topics")
+    worklog_raw = manifest.get("worklog")
+    if not isinstance(init_pro, dict):
+        findings.append(_finding("manifest.init_pro", "error", "init_pro must be an object", path=manifest_path))
+        return None, findings
+    for key in sorted(set(init_pro) - {"schema", "project_id", "profile"}):
+        findings.append(
+            _finding(
+                "manifest.unknown_key",
+                "error",
+                f"unsupported init_pro key: {key}",
+                path=manifest_path,
+            )
+        )
+    if init_pro.get("schema") != SCHEMA_VERSION:
+        findings.append(_finding("manifest.schema", "error", "init_pro.schema must be 3", path=manifest_path))
+    profile = init_pro.get("profile")
+    if profile not in PROFILES:
+        findings.append(_finding("manifest.profile", "error", "profile must be minimal, backend, cli, or library", path=manifest_path))
+        return None, findings
+    project_id = init_pro.get("project_id")
+    if not isinstance(project_id, str) or not project_id.strip() or any(c in project_id for c in "\r\n\x00"):
+        findings.append(_finding("manifest.project_id", "error", "project_id must be a non-empty single line", path=manifest_path))
+    if not isinstance(topics_raw, dict):
+        findings.append(_finding("manifest.topics", "error", "topics must be an object", path=manifest_path))
+        return None, findings
+
+    topics: dict[str, dict[str, Any]] = {}
+    for name in sorted(topics_raw, key=lambda item: (str(item).casefold(), str(item))):
+        entry = topics_raw[name]
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            findings.append(_finding("topic.schema", "error", "each topic must have one mapping object"))
             continue
-        findings.append(Finding(filename, "file exists", "PASS", "present"))
-        text = read_text(path)
-        for label, patterns in CHECKS.get(filename, []):
-            if has_all(text, patterns):
-                findings.append(Finding(filename, label, "PASS", "required markers found"))
-            else:
-                findings.append(Finding(filename, label, "FAIL", "missing one or more markers: " + ", ".join(patterns)))
+        for key in sorted(set(entry) - {"path", "kind", "managed", "watch"}):
+            findings.append(
+                _finding(
+                    "topic.unknown_key",
+                    "error",
+                    f"unsupported topic key: {key}",
+                    topic=name,
+                )
+            )
+        relative = _validate_relative(entry.get("path"), f"topic {name} path")
+        kind = entry.get("kind")
+        managed = entry.get("managed")
+        watch = entry.get("watch", [])
+        if kind not in ("file", "directory"):
+            findings.append(_finding("topic.kind", "error", "kind must be file or directory", topic=name, path=relative))
+            continue
+        if not isinstance(managed, bool):
+            findings.append(_finding("topic.managed", "error", "managed must be boolean", topic=name, path=relative))
+        normalized_watch: list[str] = []
+        if not isinstance(watch, list) or not all(isinstance(item, str) for item in watch):
+            findings.append(_finding("topic.watch", "error", "watch must be a string array", topic=name, path=relative))
+        else:
+            for pattern in watch:
+                normalized_watch.append(_validate_relative(pattern, f"topic {name} watch glob"))
+        topics[name] = {"path": relative, "kind": kind, "managed": managed, "watch": normalized_watch}
 
-    config_path = root / primary_config
-    if not config_path.exists():
-        findings.append(Finding(primary_config, "file exists", "FAIL", "missing primary YAML config"))
+    missing = sorted(PROFILE_TOPICS[profile] - topics.keys())
+    for topic in missing:
+        findings.append(_finding("profile.missing_topic", "error", f"profile {profile} requires topic {topic}", topic=topic))
+    if "context" not in topics and "instructions" in topics:
+        topics["context"] = {
+            "path": topics["instructions"]["path"],
+            "kind": topics["instructions"]["kind"],
+            "managed": topics["instructions"]["managed"],
+            "watch": [],
+        }
+    for name in ("instructions", "phase", "context"):
+        if name in topics and topics[name]["kind"] != "file":
+            findings.append(
+                _finding(
+                    "topic.kind",
+                    "error",
+                    f"topic {name} must map to a file",
+                    topic=name,
+                    path=topics[name]["path"],
+                )
+            )
+
+    owners: dict[tuple[str, ...], list[tuple[str, str]]] = {}
+    for name, entry in topics.items():
+        relative = entry["path"]
+        owners.setdefault(portable_path_key(relative), []).append((name, relative))
+    for assignments in owners.values():
+        names = [name for name, _relative in assignments]
+        if len(names) > 1 and set(names) != {"instructions", "context"}:
+            relative = assignments[0][1]
+            findings.append(
+                _finding(
+                    "topic.duplicate_authority",
+                    "error",
+                    "one authoritative source may not own multiple topics except instructions/context",
+                    path=relative,
+                )
+            )
+
+    for name, entry in topics.items():
+        path = _target(root, entry["path"], f"topic {name} path")
+        try:
+            actual_kind = stat_path_kind(path, f"topic {name} path")
+        except ControlError as exc:
+            if exc.code != "missing_path":
+                raise UsageError(exc.detail) from exc
+            findings.append(_finding("topic.missing", "error", "authoritative source does not exist", topic=name, path=entry["path"]))
+            continue
+        if actual_kind != entry["kind"]:
+            findings.append(_finding("topic.type", "error", f"expected {entry['kind']}, found {actual_kind}", topic=name, path=entry["path"]))
+
+    if not isinstance(worklog_raw, dict):
+        findings.append(_finding("manifest.worklog", "error", "worklog must be an object", path=manifest_path))
+        worklog = {"mode": "off", "path": "WORKLOG.md", "max_active_entries": 20, "archive_dir": "archive/worklog"}
     else:
-        config_text = read_text(config_path)
-        findings.append(Finding(primary_config, "file exists", "PASS", "present"))
-        for label, patterns in CONFIG_CHECKS:
-            if has_all(config_text, patterns):
-                findings.append(Finding(primary_config, label, "PASS", "required markers found"))
+        for key in sorted(
+            set(worklog_raw) - {"mode", "path", "max_active_entries", "archive_dir"}
+        ):
+            findings.append(
+                _finding(
+                    "worklog.unknown_key",
+                    "error",
+                    f"unsupported worklog key: {key}",
+                    path=manifest_path,
+                )
+            )
+        mode = worklog_raw.get("mode")
+        if mode not in ("compact", "off"):
+            findings.append(_finding("worklog.mode", "error", "worklog.mode must be compact or off", path=manifest_path))
+            mode = "off"
+        worklog_path = _validate_relative(worklog_raw.get("path", "WORKLOG.md"), "worklog path")
+        archive_dir = _validate_relative(worklog_raw.get("archive_dir", "archive/worklog"), "worklog archive_dir")
+        max_entries = worklog_raw.get("max_active_entries", 20)
+        if (
+            not isinstance(max_entries, int)
+            or isinstance(max_entries, bool)
+            or not 1 <= max_entries <= 20
+        ):
+            findings.append(
+                _finding(
+                    "worklog.max_entries",
+                    "error",
+                    "max_active_entries must be an integer from 1 through 20",
+                    path=manifest_path,
+                )
+            )
+            max_entries = 20
+        worklog = {"mode": mode, "path": worklog_path, "max_active_entries": max_entries, "archive_dir": archive_dir}
+
+    if _paths_overlap(worklog["path"], worklog["archive_dir"]):
+        findings.append(
+            _finding("worklog.path_overlap", "error", "worklog path and archive_dir overlap", path=manifest_path)
+        )
+    if _paths_overlap(manifest_path, worklog["path"]) or _paths_overlap(
+        manifest_path, worklog["archive_dir"]
+    ):
+        findings.append(
+            _finding("worklog.path_overlap", "error", "manifest and worklog namespace overlap", path=manifest_path)
+        )
+    for name, entry in topics.items():
+        if _paths_overlap(entry["path"], manifest_path):
+            findings.append(
+                _finding("topic.path_overlap", "error", "topic overlaps the manifest path", topic=name, path=entry["path"])
+            )
+        if _paths_overlap(entry["path"], worklog["path"]) or _paths_overlap(
+            entry["path"], worklog["archive_dir"]
+        ):
+            findings.append(
+                _finding("worklog.path_overlap", "error", "topic and worklog paths overlap", topic=name, path=entry["path"])
+            )
+
+    normalized = {"profile": profile, "project_id": project_id, "topics": topics, "worklog": worklog}
+    if not findings:
+        try:
+            shared = normalize_manifest_schema(manifest, manifest_path=manifest_path)
+        except ControlError as exc:
+            if exc.code == "unsafe_path":
+                raise UsageError(exc.detail) from exc
+            return None, [_finding("manifest.schema", "error", exc.detail, path=manifest_path)]
+        shared_metadata = shared["init_pro"]
+        normalized = {
+            "profile": shared_metadata["profile"],
+            "project_id": shared_metadata["project_id"],
+            "topics": shared["topics"],
+            "worklog": shared["worklog"],
+        }
+    return normalized, findings
+
+
+def _validate_instruction_references(root: Path, manifest_path: str, normalized: dict[str, Any]) -> list[dict[str, str]]:
+    topics = normalized["topics"]
+    instructions = topics.get("instructions")
+    if not instructions or instructions["kind"] != "file":
+        return []
+    path = _target(root, instructions["path"], "instructions path")
+    try:
+        text = read_utf8_regular(path, "instructions path")
+    except ControlError as exc:
+        if exc.code == "missing_path":
+            return []
+        if exc.code == "invalid_utf8":
+            return [_finding("instructions.encoding", "error", "instructions must be UTF-8 text", topic="instructions", path=instructions["path"])]
+        raise UsageError(exc.detail) from exc
+    expected = {manifest_path}
+    for name in PROFILE_TOPICS[normalized["profile"]]:
+        if name != "instructions" and name in topics:
+            expected.add(topics[name]["path"])
+    missing = sorted(value for value in expected if value not in text)
+    return [
+        _finding(
+            "instructions.missing_reference",
+            "error",
+            f"instructions do not point to mapped authoritative source: {value}",
+            topic="instructions",
+            path=instructions["path"],
+        )
+        for value in missing
+    ]
+
+
+def _worklog_sources(root: Path, worklog: dict[str, Any]) -> list[tuple[str, bytes]]:
+    sources: list[tuple[str, bytes]] = []
+    root_relative = worklog["path"]
+    try:
+        root_content = read_regular_bytes(root / PurePosixPath(root_relative), "worklog path")
+    except ControlError as exc:
+        if exc.code != "missing_path":
+            raise UsageError(exc.detail) from exc
+    else:
+        sources.append((root_relative, root_content))
+
+    archive_relative = worklog["archive_dir"]
+    try:
+        tree = scan_worklog_archive(
+            root / PurePosixPath(archive_relative),
+            "worklog archive",
+            max_file_bytes=1024 * 1024,
+        )
+    except ControlError as exc:
+        if exc.code == "missing_path":
+            return sources
+        raise UsageError(exc.detail) from exc
+    for item in tree:
+        assert item.content is not None
+        relative = f"{archive_relative.rstrip('/')}/{item.relative}"
+        sources.append((relative, item.content))
+    return sorted(sources, key=lambda item: (item[0].casefold(), item[0]))
+
+
+def _validate_worklog(
+    root: Path,
+    worklog: dict[str, Any],
+    topics: dict[str, Any],
+) -> list[dict[str, str]]:
+    if worklog["mode"] == "off":
+        return []
+    findings: list[dict[str, str]] = []
+    sources = _worklog_sources(root, worklog)
+    if not any(relative == worklog["path"] for relative, _content in sources):
+        return [_finding("worklog.missing", "error", "compact worklog does not exist", path=worklog["path"])]
+    seen: dict[str, str] = {}
+    active_count = 0
+    for relative, content in sources:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            findings.append(_finding("worklog.encoding", "error", "worklog must be UTF-8 text", path=relative))
+            continue
+        if not has_compact_worklog_signature(text):
+            findings.append(
+                _finding(
+                    "worklog.missing_compact_signature",
+                    "error",
+                    "worklog is not an init-pro compact log; migrate legacy prose first",
+                    path=relative,
+                )
+            )
+        sensitive_mapping = {
+            "absolute_user_path": ("worklog.absolute_path", "worklog contains an absolute user path"),
+            "secret_pattern": ("worklog.secret", "worklog contains a possible secret"),
+            "private_url": ("worklog.private_url", "worklog contains a private URL"),
+        }
+        for sensitive_code in sensitive_codes(text):
+            finding_code, message = sensitive_mapping[sensitive_code]
+            findings.append(_finding(finding_code, "error", message, path=relative))
+        records, diagnostics = parse_worklog_fences(text)
+        for diagnostic in diagnostics:
+            findings.append(
+                _finding(
+                    f"worklog.{diagnostic.code}",
+                    "error",
+                    diagnostic.detail,
+                    path=relative,
+                )
+            )
+        for record in records:
+            entry = record.entry
+            for diagnostic in validate_worklog_entry(
+                entry,
+                frozenset(topics),
+            ):
+                findings.append(
+                    _finding(
+                        f"worklog.{diagnostic.code}",
+                        "error",
+                        diagnostic.detail,
+                        path=relative,
+                    )
+                )
+            task_id = entry.get("task_id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                findings.append(_finding("worklog.task_id", "error", "every entry requires a non-empty task_id", path=relative))
+                continue
+            if task_id in seen:
+                findings.append(_finding("worklog.duplicate_task_id", "error", f"duplicate task_id: {task_id}", path=relative))
             else:
-                findings.append(Finding(primary_config, label, "FAIL", "missing one or more markers: " + ", ".join(patterns)))
-
-        worklog_path = root / "WORKLOG.md"
-        if worklog_path.exists():
-            worklog_text = read_text(worklog_path)
-            status = "PASS" if primary_config in worklog_text else "FAIL"
-            detail = "primary config is listed in WORKLOG initial modified files" if status == "PASS" else "primary config is not listed in WORKLOG initial modified files"
-            findings.append(Finding("WORKLOG.md", "initial record includes primary config", status, detail))
-
+                seen[task_id] = relative
+            if relative == worklog["path"]:
+                active_count += 1
+    if active_count > worklog["max_active_entries"]:
+        findings.append(_finding("worklog.rotation_required", "error", "active worklog exceeds max_active_entries", path=worklog["path"]))
     return findings
 
 
-def overall_status(findings: list[Finding]) -> str:
-    failed = sum(1 for finding in findings if finding.status == "FAIL")
-    if failed:
-        return "FAIL"
-    return "PASS"
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    )
 
 
-def markdown_table(findings: list[Finding]) -> str:
-    lines = ["| Status | File | Check | Detail |", "|---|---|---|---|"]
-    for finding in findings:
-        lines.append(f"| {finding.status} | `{finding.file}` | {finding.check} | {finding.detail} |")
-    return "\n".join(lines)
+def _changed_paths(root: Path, base: str) -> list[str]:
+    check = _git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
+    if check.returncode != 0:
+        raise UsageError("--base must name an existing Git commit")
+    prefix_result = _git(root, "rev-parse", "--show-prefix")
+    if prefix_result.returncode != 0:
+        raise UsageError("could not resolve project path inside the Git repository")
+    prefix = prefix_result.stdout.strip("\n")
+    diff = _git(root, "diff", "--name-only", "-z", "--no-renames", base, "--", ".")
+    if diff.returncode != 0:
+        raise UsageError("could not compute Git diff for --base")
+    values = {value for value in diff.stdout.split("\x00") if value}
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z", "--", ".")
+    if untracked.returncode == 0:
+        values.update(value for value in untracked.stdout.split("\x00") if value)
+    normalized: list[str] = []
+    for value in values:
+        if prefix:
+            if value.startswith(prefix):
+                value = value[len(prefix) :]
+        try:
+            normalized.append(_validate_relative(value, "changed path"))
+        except UsageError:
+            continue
+    return sorted(set(normalized), key=lambda item: (item.casefold(), item))
 
 
-def status_summary(findings: list[Finding]) -> str:
-    passed = sum(1 for finding in findings if finding.status == "PASS")
-    failed = sum(1 for finding in findings if finding.status == "FAIL")
-    return f"- PASS: {passed}\n- FAIL: {failed}"
+def _source_changed(changed: list[str], path: str, kind: str) -> bool:
+    if kind == "file":
+        return path in changed
+    prefix = path.rstrip("/") + "/"
+    return any(value == path or value.startswith(prefix) for value in changed)
 
 
-def constraint_graph(primary_config: str) -> str:
-    return f"""```mermaid
-flowchart LR
-  AGENTS["AGENTS.md<br/>目标/硬约束/输出格式"]
-  PLAN["PLAN.md<br/>阶段/优先级/执行后校验"]
-  API["API_CONTRACT.md<br/>接口/错误/兼容/幂等/后台任务"]
-  ARCH["ARCHITECTURE_CONTRACT.md<br/>分层/边界"]
-  DECISION["DECISION_LOG.md<br/>变更原因"]
-  CONTEXT["CONTEXT_READ_RULES.md<br/>读取策略"]
-  CONFIG["{primary_config}<br/>配置/能力/输出默认值"]
-  WORKLOG["WORKLOG.md<br/>执行记录"]
-  CODE["代码与测试"]
-  VALIDATION["INIT_PRO_VALIDATION.md<br/>可视化校验反馈"]
-
-  AGENTS --> PLAN
-  PLAN --> API
-  PLAN --> CONFIG
-  API --> CODE
-  ARCH --> CODE
-  CONTEXT --> CODE
-  CONFIG --> CODE
-  CODE --> WORKLOG
-  API --> DECISION
-  ARCH --> DECISION
-  CONTEXT --> DECISION
-  CONFIG --> DECISION
-  WORKLOG --> VALIDATION
-  AGENTS --> VALIDATION
-  PLAN --> VALIDATION
-  API --> VALIDATION
-  ARCH --> VALIDATION
-  CONTEXT --> VALIDATION
-  CONFIG --> VALIDATION
-```"""
+def _diff_review_findings(root: Path, base: str | None, topics: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    if base is None:
+        return []
+    changed = _changed_paths(root, base)
+    findings: list[dict[str, str]] = []
+    for name in sorted(topics):
+        entry = topics[name]
+        watched = sorted(
+            value for value in changed
+            if any(fnmatch.fnmatchcase(value, pattern) for pattern in entry["watch"])
+        )
+        if watched and not _source_changed(changed, entry["path"], entry["kind"]):
+            findings.append(
+                _finding(
+                    "topic.review_required",
+                    "review",
+                    "watched code changed without a change to its authoritative source",
+                    topic=name,
+                    path=entry["path"],
+                )
+            )
+    return findings
 
 
-def change_impact_graph() -> str:
-    return """```mermaid
-flowchart TD
-  CHANGE["业务修改"]
-  BUG["Bugfix / 内部重构"]
-  API["新增或修改公共接口"]
-  BREAK["Breaking change"]
-  ADAPTER["新增外部系统 / Adapter"]
-  RULE["规则/阈值/状态口径变化"]
-  OUTPUT["输出结构变化"]
-  TASK["后台任务/重试/超时/并发"]
-  CONTEXT["上下文读取策略变化"]
-  PHASE["阶段/技术栈/硬约束变化"]
-
-  CHANGE --> BUG
-  CHANGE --> API
-  API --> BREAK
-  CHANGE --> ADAPTER
-  CHANGE --> RULE
-  CHANGE --> OUTPUT
-  CHANGE --> TASK
-  CHANGE --> CONTEXT
-  CHANGE --> PHASE
-
-  BUG --> W["WORKLOG.md"]
-  API --> AC["API_CONTRACT.md"]
-  BREAK --> DL["DECISION_LOG.md"]
-  ADAPTER --> AR["ARCHITECTURE_CONTRACT.md"]
-  ADAPTER --> CFG["primary YAML"]
-  RULE --> CFG
-  RULE --> DL
-  OUTPUT --> AC
-  OUTPUT --> DL
-  TASK --> AC
-  TASK --> AR
-  TASK --> CFG
-  CONTEXT --> CR["CONTEXT_READ_RULES.md"]
-  CONTEXT --> DL
-  PHASE --> AG["AGENTS.md / PLAN.md"]
-  PHASE --> DL
-
-  AC --> W
-  AR --> W
-  CFG --> W
-  CR --> W
-  AG --> W
-  DL --> W
-```"""
-
-
-def scenario_table() -> str:
-    lines = ["| Scenario | Expected control-file update |", "|---|---|"]
-    for scenario, expected in SCENARIOS:
-        lines.append(f"| {scenario} | {expected} |")
-    return "\n".join(lines)
+def validate(root: Path, manifest_path: str, base: str | None) -> dict[str, Any]:
+    manifest, findings = _load_manifest(root, manifest_path)
+    normalized: dict[str, Any] | None = None
+    if manifest is not None:
+        normalized, schema_findings = _normalize_manifest(root, manifest, manifest_path)
+        findings.extend(schema_findings)
+    if normalized is not None:
+        identity_paths = {
+            manifest_path,
+            normalized["worklog"]["path"],
+            normalized["worklog"]["archive_dir"],
+            *(entry["path"] for entry in normalized["topics"].values()),
+        }
+        try:
+            reject_existing_path_aliases(
+                root,
+                identity_paths,
+                "mapped control paths",
+            )
+        except ControlError as exc:
+            if exc.code == "path_alias":
+                findings.append(
+                    _finding(
+                        "path.alias",
+                        "error",
+                        exc.detail,
+                        path=manifest_path,
+                    )
+                )
+            else:
+                raise UsageError(exc.detail) from exc
+        findings.extend(_validate_instruction_references(root, manifest_path, normalized))
+        findings.extend(
+            _validate_worklog(
+                root,
+                normalized["worklog"],
+                normalized["topics"],
+            )
+        )
+        findings.extend(_diff_review_findings(root, base, normalized["topics"]))
+    findings.sort(key=lambda item: (
+        0 if item["severity"] == "error" else 1,
+        item["code"], item.get("topic", ""), item.get("path", ""), item["message"],
+    ))
+    if any(item["severity"] == "error" for item in findings):
+        status_value = "FAIL"
+    elif any(item["severity"] == "review" for item in findings):
+        status_value = "REVIEW_REQUIRED"
+    else:
+        status_value = "STRUCTURAL_PASS"
+    return {"schema": SCHEMA_VERSION, "status": status_value, "manifest": manifest_path, "findings": findings}
 
 
-def build_report(root: Path, primary_config: str, findings: list[Finding]) -> str:
-    generated_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"""# Init Pro Validation Report
-
-## Summary
-
-- Project root: `{root}`
-- Primary config: `{primary_config}`
-- Generated at: `{generated_at}`
-- Overall status: `{overall_status(findings)}`
-
-{status_summary(findings)}
-
-## Constraint Graph
-
-{constraint_graph(primary_config)}
-
-## Change Impact Graph
-
-{change_impact_graph()}
-
-## Scenario Matrix
-
-{scenario_table()}
-
-## Control File Checks
-
-{markdown_table(findings)}
-
-## How To Use This Report
-
-1. If overall status is `PASS`, the control scaffold is structurally complete.
-2. If any row is `FAIL`, fix the listed file before continuing implementation.
-3. After completing a planned business change, compare the change type against the scenario matrix and confirm `WORKLOG.md` records the actual control-file updates.
-"""
+def _markdown(payload: dict[str, Any]) -> str:
+    lines = ["# Project controls structural validation", "", f"Status: **{payload['status']}**", "", f"Manifest: `{payload['manifest']}`", ""]
+    if not payload["findings"]:
+        lines.append("No structural or diff-review findings.")
+    else:
+        lines.extend(("| Severity | Code | Topic | Path | Message |", "|---|---|---|---|---|"))
+        for item in payload["findings"]:
+            values = [item["severity"], item["code"], item.get("topic", ""), item.get("path", ""), item["message"]]
+            lines.append("| " + " | ".join(str(value).replace("|", "\\|").replace("\n", " ") for value in values) + " |")
+    return "\n".join(lines) + "\n"
 
 
-def parse_args() -> argparse.Namespace:
+def _render(payload: dict[str, Any], format_name: str) -> str:
+    if format_name == "json":
+        return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return _markdown(payload)
+
+
+def _write_output(
+    root: Path,
+    relative: str,
+    text: str,
+    protected_files: set[str],
+    protected_directories: set[str],
+) -> None:
+    normalized = _validate_relative(relative, "output")
+    if normalized in protected_files or any(
+        _path_within(normalized, directory) for directory in protected_directories
+    ):
+        raise UsageError("output must not overwrite a control source or manifest")
+    try:
+        write_text_anchored(root, normalized, text, mode=0o644)
+    except ControlError as exc:
+        raise UsageError(exc.detail) from exc
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project-root", required=True, help="Target repository root")
-    parser.add_argument("--primary-config", default="project-defaults.yaml", help="Primary YAML config filename")
-    parser.add_argument("--output", default="INIT_PRO_VALIDATION.md", help="Markdown report path, relative to project root unless absolute")
-    return parser.parse_args()
+    parser.add_argument("--project-root", required=True)
+    parser.add_argument("--manifest", default="project-controls.json")
+    parser.add_argument("--base")
+    parser.add_argument("--format", default="json", choices=("json", "markdown"))
+    parser.add_argument("--output", default="-")
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
-    root = Path(args.project_root).expanduser().resolve()
-    output_path = Path(args.output).expanduser()
-    if not output_path.is_absolute():
-        output_path = root / output_path
+def _emit_error(message: str) -> None:
+    print(json.dumps({"error": message}, ensure_ascii=False), file=sys.stderr)
 
-    findings = validate(root, args.primary_config)
-    report = build_report(root, args.primary_config, findings)
-    output_path.write_text(report, encoding="utf-8")
 
-    print(f"wrote {output_path}")
-    print(f"overall_status={overall_status(findings)}")
-    return 0 if overall_status(findings) == "PASS" else 1
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args(argv)
+        root = _project_root(args.project_root)
+        manifest_path = _validate_relative(args.manifest, "manifest")
+        payload = validate(root, manifest_path, args.base)
+        text = _render(payload, args.format)
+        if args.output == "-":
+            sys.stdout.write(text)
+        else:
+            protected_files = {manifest_path}
+            protected_directories: set[str] = set()
+            manifest, _ = _load_manifest(root, manifest_path)
+            if isinstance(manifest, dict):
+                topics = manifest.get("topics", {})
+                if isinstance(topics, dict):
+                    for entry in topics.values():
+                        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                            continue
+                        if entry.get("kind") == "directory":
+                            protected_directories.add(entry["path"])
+                        else:
+                            protected_files.add(entry["path"])
+                worklog = manifest.get("worklog", {})
+                if isinstance(worklog, dict) and isinstance(worklog.get("path"), str):
+                    protected_files.add(worklog["path"])
+                if isinstance(worklog, dict) and isinstance(worklog.get("archive_dir"), str):
+                    protected_directories.add(worklog["archive_dir"])
+            _write_output(root, args.output, text, protected_files, protected_directories)
+        return {"STRUCTURAL_PASS": 0, "FAIL": 1, "REVIEW_REQUIRED": 3}[payload["status"]]
+    except UsageError as exc:
+        _emit_error(str(exc))
+        return 2
+    except OSError as exc:
+        _emit_error(f"filesystem operation failed: {exc}")
+        return 2
 
 
 if __name__ == "__main__":

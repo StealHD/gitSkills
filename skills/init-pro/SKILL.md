@@ -1,136 +1,81 @@
 ---
 name: init-pro
-description: Generate reusable project control-plane constraints for new repositories or major project initialization, including AGENTS.md, PLAN.md, WORKLOG.md, context-read rules, decision logs, API/architecture contracts, concise agent output rules, unique-source-of-truth rules, and Markdown/YAML templates. Use when a user asks to create a new project, initialize AI collaboration rules, extract common constraints from an existing project, preserve WORKLOG/control Markdown formats, or scaffold agent instructions for another repository.
+description: Use when initializing or adopting durable repository-level AI collaboration controls for a new or existing project, especially when history, scope, phase, interface or architecture ownership, context routing, decisions, and compact work logging need explicit sources of truth.
 ---
 
 # Init Pro
 
-## Purpose
+Create a small, mapped repository control plane for repeated AI-assisted work. Do not create application code, dependencies, or a fixed document suite. Reuse the repository's real sources of truth whenever possible.
 
-Use this skill to initialize a repository with reusable AI collaboration constraints. It extracts the generic control logic from a mature project while keeping project-specific domain terms configurable.
+This skill does not replace Spec Kit or OpenSpec. Those tools organize a feature's Spec → Plan → Tasks workflow; init-pro maps durable repository-wide constraints and ownership across many features and tasks.
 
-The core pattern is:
+## Required workflow
 
-1. Define the project context before technical details.
-2. Separate scope, architecture, API, rules, reports, decisions, context reading, and work logs into explicit control files.
-3. Keep one source of truth for each control-plane topic.
-4. Require every agent task to append a concise `WORKLOG.md` entry.
-5. Default to compact final output unless the user asks for expanded analysis.
+Follow this order exactly:
 
-## Quick Start
+`inspect → audit → mapping review → dry-run → approved apply → legacy import when required → structural validation → semantic review`
 
-When initializing a new repository, run the scaffold script from the target project root:
+1. **inspect** — Read applicable `AGENTS.md`, `git status`, manifests, code layout, and existing control documents. Do not write during inspection.
+2. **audit** — Run `audit_project_controls.py`. Use its history and shadow-source signals as evidence, not as an automatic ownership decision.
+3. **mapping review** — Propose one authoritative source for each required topic in `project-controls.json`. Classify overlapping documents as authority, reference, or archive candidates. Get the mapping reviewed before applying it.
+4. **dry-run** — Run `scaffold_project_controls.py --dry-run`. Review every target's existence, type, mode, content diff, and `plan_hash`.
+5. **approved apply** — Apply only with the matching `--approve-plan SHA256`. If any target changed, generate and review a new plan. Never use legacy `--force`.
+6. **legacy import when required** — If an adopted WORKLOG or its old archive is not compact, run `worklogctl.py import-legacy --dry-run`, review byte counts, digests, destinations, and sensitive-code labels, then apply only the matching plan hash. This archives raw UTF-8 bytes outside the active compact namespace; it never guesses task semantics.
+7. **structural validation** — Run both `validate_project_controls.py` and `worklogctl.py validate`. `STRUCTURAL_PASS` means only that deterministic structure checks passed. `REVIEW_REQUIRED` means watched code changed without a corresponding authority review.
+8. **semantic review** — As the Agent, compare current phase, product mode, default read set, interface and architecture boundaries, decision coverage, completion claims, and validation evidence. Cite repository-relative files and relevant commits. Label inference as inference; do not claim an unstable LLM semantic gate runs in CI.
+
+## Mode and profile
+
+| Choice | Use when |
+|---|---|
+| `bootstrap` | A new control plane will be created from a fully domain-hydrated proposal. |
+| `adopt` | Any relevant control source already exists. Existing sources are registered as `managed=false` and remain byte-for-byte unchanged. |
+| `minimal` | Only repository instructions and current phase are durable topics. |
+| `backend` | A backend has stable interface, architecture, and decision boundaries. |
+| `cli` | A CLI has stable commands, outputs, exit behavior, architecture, and decisions. |
+| `library` | A reusable package has public API, compatibility, architecture, and decisions. |
+
+`minimal` requires `instructions` and `phase`. Other profiles also require `interface`, `architecture`, and `decisions`. `context` defaults to the mapped instructions source, normally `AGENTS.md`; do not create `CONTEXT_READ_RULES.md` merely to fill a slot. For large repositories, prefer scoped nested `AGENTS.md` files over copying a long context manual.
+
+Map `capabilities` only when a real machine-readable source exists and code or tests consume it. During semantic review, describe each capability as exactly one of `core | compatibility | disabled | planned`; the existence of an interface is not proof that it is a current product capability.
+
+## Commands
 
 ```bash
 INIT_PRO_HOME="${CODEX_HOME:-$HOME/.codex}/skills/init-pro"
+
+python3 "$INIT_PRO_HOME/scripts/audit_project_controls.py" \
+  --project-root . --format markdown
+
 python3 "$INIT_PRO_HOME/scripts/scaffold_project_controls.py" \
-  --project-root . \
-  --project-name "Example System" \
-  --domain "short domain description" \
-  --stack "Python + FastAPI" \
-  --primary-config "project-defaults.yaml"
+  --project-root . --mode adopt --profile backend \
+  --mapping control-proposal.json --worklog compact --dry-run
+
+python3 "$INIT_PRO_HOME/scripts/scaffold_project_controls.py" \
+  --project-root . --mode adopt --profile backend \
+  --mapping control-proposal.json --worklog compact \
+  --approve-plan '<reviewed-sha256>'
+
+python3 "$INIT_PRO_HOME/scripts/worklogctl.py" import-legacy \
+  --project-root . --legacy-archive-dir archive/legacy-worklog \
+  --dry-run
+
+python3 "$INIT_PRO_HOME/scripts/worklogctl.py" import-legacy \
+  --project-root . --legacy-archive-dir archive/legacy-worklog \
+  --approve-plan '<reviewed-sha256>'
+
+python3 "$INIT_PRO_HOME/scripts/validate_project_controls.py" \
+  --project-root . --manifest project-controls.json --format markdown
+
+python3 "$INIT_PRO_HOME/scripts/worklogctl.py" validate --project-root .
 ```
 
-`CODEX_HOME` is optional. If it is unset, the examples use the standard Codex skill root at `$HOME/.codex`.
+Use `--base GIT_REF` for a deterministic watch-glob review gate. Exit status is `0` for `STRUCTURAL_PASS`, `1` for `FAIL`, `2` for argument/path safety errors, and `3` for `REVIEW_REQUIRED`.
 
-Use `--force` only when the user explicitly wants to overwrite existing control files. Without `--force`, existing files are preserved.
+Read `references/practical-manual.md` for the proposal schema, adoption and bootstrap examples, approval mechanics, and WORKLOG commands. Read `references/control-file-patterns.md` when choosing authorities, classifying shadow documents, or conducting semantic review.
 
-## Workflow
+## Compact WORKLOG boundary
 
-1. Read the target repository minimally: existing `AGENTS.md`, `PLAN.md`, `WORKLOG.md`, primary config, and current task-relevant files if present.
-2. Identify project-specific keywords:
-   - domain name and domain objects
-   - current delivery phase
-   - supported runtimes, integrations, data sources, or platforms
-   - primary stack
-   - explicit non-goals
-   - capability/degrade language needed for unsupported features
-3. Run the scaffold script to create missing control files.
-4. Edit generated files only where the target project needs concrete values.
-5. After completing plan work, run `scripts/validate_project_controls.py` to generate a visual Markdown validation report with Mermaid constraint graphs.
-6. Append or create a `WORKLOG.md` entry for the initialization task.
+Log only a persistent repository change, important decision, or unresolved risk. Do not log read-only questions, status checks, no-ops, or work blocked before mutation. The root Agent writes at most one entry per user task; subagents do not append separate entries. Use `worklogctl.py`; never duplicate a task across root and archive.
 
-## Control Files
-
-Create these files by default:
-
-1. `AGENTS.md`: highest-level AI collaboration constraints, scope, non-goals, hard constraints, output format, worklog rules, control-plane maintenance rules.
-2. `PLAN.md`: current phase, implementation order, default read scope, priority list, test order, explicit non-goals.
-3. `API_CONTRACT.md`: API or interface boundary. Keep it even for non-HTTP projects by describing public commands, modules, events, or integration contracts.
-4. `ARCHITECTURE_CONTRACT.md`: responsibility boundaries and layering.
-5. `DECISION_LOG.md`: decision records with status, reason, impact, and follow-up validation.
-6. `CONTEXT_READ_RULES.md`: minimal context strategy, default files, files to avoid, and task-specific read expansion.
-7. `WORKLOG.md`: compact execution log and reusable append template.
-8. Primary YAML config, usually `project-defaults.yaml`: feature flags, capabilities, thresholds, default limits, and output behavior.
-
-Add extra contract files only when the target domain has a durable boundary that would otherwise be repeated in several docs, such as `DATASOURCE_ADAPTER_CONTRACT.md`, `RULES_SPEC.md`, or `REPORT_CONTRACT.md`.
-
-## Reusable Keywords
-
-Prefer generic keywords in scaffolded constraints, then specialize them for the repository:
-
-- project context
-- current phase
-- delivery scope
-- explicit non-goals
-- runtime source
-- semantic reference source
-- adapter boundary
-- standard model
-- capability
-- degrade
-- rule
-- evidence
-- report contract
-- interface contract
-- unique source of truth
-- context read scope
-- archive
-- worklog
-- decision log
-- primary config
-
-Avoid copying source-project-specific terms unless they are truly part of the new project.
-
-## Required Formats
-
-Preserve the output and worklog formats from the reference scaffold.
-
-Default final response format:
-
-```md
-状态：成功 / 部分完成 / 阻塞
-结果：一句话说明做成了什么
-验证：测试是否通过，接口是否验证
-阻塞：如果有，列 1~3 条；如果没有可省略
-文件：只列修改过的关键文件路径，最多 8 个
-```
-
-`WORKLOG.md` append template:
-
-```md
-### YYYY-MM-DD HH:MM AgentName
-- 任务：一句话说明当前任务
-- 读取文件：列出关键控制文件、代码文件、测试文件
-- 修改文件：列出本次实际修改的文件
-- 执行验证：列出关键命令、测试、接口验证
-- 结果：说明完成了什么
-- 未解决问题：如无则写“无”
-- 控制面变更：如无则写“无”；如有，写明更新了哪些控制文件以及原因
-```
-
-## Maintenance Rules
-
-When coding in a scaffolded repository:
-
-1. Do not modify Markdown control files by default.
-2. Modify control files only when the control plane changes, such as API contract, architecture boundary, capability, rule meaning, report shape, context-read strategy, or current phase.
-3. Always append a concise `WORKLOG.md` entry at task end.
-4. Keep historical material under `archive/**`; do not read it by default.
-5. Do not duplicate the same rule across multiple files. Update the unique source of truth and record reasons in `DECISION_LOG.md`.
-
-## References
-
-Read `references/control-file-patterns.md` when you need the exact file responsibilities, default sections, or customization guidance.
-
-Read `references/practical-manual.md` when the user asks how to use `init-pro` in real projects, especially Python + FastAPI projects, or asks where output/worklog/control-file constraints are enforced.
+`archive/worklog` (or the mapped equivalent) contains only direct canonical `YYYY-MM.md` compact logs. Raw legacy history belongs in a separate directory such as `archive/legacy-worklog`. `append` is idempotent for the same normalized task, while `append` and `rotate` repair only the documented archive-first duplicate under a POSIX lock. `validate` is always read-only; see the practical manual for migration, interruption, and non-POSIX boundaries.

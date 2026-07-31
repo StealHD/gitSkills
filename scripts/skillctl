@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 import argparse
 import ast
+from contextlib import contextmanager
+from dataclasses import dataclass
 import fnmatch
+import gzip
 import hashlib
+import io
 import json
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import secrets
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+
+try:
+    import fcntl
+except ModuleNotFoundError:  # pragma: no cover - packaging writes are POSIX-only
+    fcntl = None
 
 try:
     import tomllib
@@ -23,6 +35,103 @@ CONFIG = ROOT / "skills.toml"
 DIST = ROOT / "dist"
 MANIFEST_DIR = ROOT / ".release"
 
+ARCHIVE_EPOCH = 315_532_800
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+MEMORY_OUTPUT = object()
+
+
+class PackageSafetyError(Exception):
+    """Raised when package inputs cannot be read without following links."""
+
+
+@dataclass(frozen=True)
+class SourceLocator:
+    root: str
+    relative: str
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
+class SnapshotEntry:
+    data: bytes
+    executable: bool
+
+
+@dataclass(frozen=True)
+class RegularFileState:
+    digest: str
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class AnchoredDirectory:
+    descriptor: int
+    display: Path
+    relative: Path
+
+    def file(self, entry_name, logical_name=None, expected_state=None):
+        return AnchoredFile(
+            directory=self,
+            entry_name=entry_name,
+            logical_name=logical_name or entry_name,
+            expected_state=expected_state,
+        )
+
+
+@dataclass(frozen=True)
+class AnchoredFile:
+    directory: AnchoredDirectory
+    entry_name: str
+    logical_name: str
+    expected_state: RegularFileState | None = None
+
+    @property
+    def name(self):
+        return self.logical_name
+
+    @property
+    def suffix(self):
+        return Path(self.logical_name).suffix
+
+    @property
+    def display(self):
+        return self.directory.display / self.entry_name
+
+
+@dataclass(frozen=True)
+class OutputRoots:
+    dist: AnchoredDirectory
+    manifest: AnchoredDirectory
+
+
+@dataclass(frozen=True)
+class MemoryArchive:
+    name: str
+    data: bytes
+
+    @property
+    def suffix(self):
+        return Path(self.name).suffix
+
+
+@dataclass
+class PublicationMutation:
+    source: object
+    destination: object
+    backup: object | None
+    old_digest: str | None
+    new_digest: str
+    source_device: int
+    source_inode: int
+    backup_state: RegularFileState | None = None
+    destination_replace_started: bool = False
+    destination_replace_completed: bool = False
+
 PUBLIC_SECRET_PATTERNS = [
     ("notion_url", re.compile(r"https://(?:www\.)?notion\.so/[A-Za-z0-9][^\s`<>)\"]*")),
     ("notion_collection_id", re.compile(r"collection://[0-9a-fA-F-]{20,}")),
@@ -34,6 +143,528 @@ PUBLIC_SECRET_PATTERNS = [
 LOCAL_CONTEXT_PATTERNS = [
     ("local_user_path", re.compile(r"/Users/[^/\s`]+/")),
 ]
+
+
+def canonical_relative_path(value, label, *, directory_hint=False):
+    if not isinstance(value, str):
+        raise PackageSafetyError(f"{label} must be a string")
+    raw = value
+    if directory_hint and raw.endswith("/"):
+        raw = raw[:-1]
+    if (
+        not raw
+        or "\x00" in raw
+        or "\\" in raw
+        or raw.startswith("/")
+        or PureWindowsPath(raw).drive
+        or any(part in {"", ".", ".."} for part in raw.split("/"))
+    ):
+        raise PackageSafetyError(f"{label} is not a canonical relative path: {value!r}")
+    normalized = PurePosixPath(raw).as_posix()
+    if normalized != raw:
+        raise PackageSafetyError(f"{label} is not a canonical relative path: {value!r}")
+    return normalized
+
+
+def _open_flags(*, directory=False):
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    return flags
+
+
+def _open_root_directory(path, label):
+    try:
+        descriptor = os.open(path, _open_flags(directory=True))
+    except OSError as exc:
+        raise PackageSafetyError(f"{label} is not a safe directory: {path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PackageSafetyError(f"{label} is not a directory: {path}")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_directory_at(parent_fd, name, label, expected=None):
+    try:
+        descriptor = os.open(name, _open_flags(directory=True), dir_fd=parent_fd)
+    except OSError as exc:
+        raise PackageSafetyError(f"{label} contains a symlink, special file, or missing directory") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PackageSafetyError(f"{label} is not a directory")
+        if expected is not None and (
+            metadata.st_dev != expected.st_dev or metadata.st_ino != expected.st_ino
+        ):
+            raise PackageSafetyError(f"{label} changed while it was inspected")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_relative_directory(root_fd, relative, label):
+    descriptor = os.dup(root_fd)
+    try:
+        for part in relative.split("/"):
+            next_descriptor = _open_directory_at(descriptor, part, label)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _stat_at(parent_fd, name, label):
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot inspect {label}") from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise PackageSafetyError(f"{label} is a symlink")
+    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
+        raise PackageSafetyError(f"{label} is a special file")
+    return metadata
+
+
+def _output_relative_path(path, label):
+    root_path = Path(os.path.abspath(ROOT))
+    supplied = Path(path)
+    target_path = Path(
+        os.path.abspath(supplied if supplied.is_absolute() else Path(ROOT) / supplied)
+    )
+    try:
+        relative = target_path.relative_to(root_path)
+    except ValueError as exc:
+        raise PackageSafetyError(f"{label} must stay inside the repository root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise PackageSafetyError(f"{label} is not a safe repository-relative directory")
+    return relative
+
+
+def _open_or_create_output_directory(root_fd, relative, display, label):
+    descriptor = os.dup(root_fd)
+    try:
+        for index, part in enumerate(relative.parts):
+            component = "/".join(relative.parts[: index + 1])
+            metadata = _stat_at(descriptor, part, f"{label} {component}")
+            if metadata is None:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise PackageSafetyError(
+                        f"cannot create {label} component: {component}"
+                    ) from exc
+                metadata = _stat_at(descriptor, part, f"{label} {component}")
+            if metadata is None or not stat.S_ISDIR(metadata.st_mode):
+                raise PackageSafetyError(f"{label} component is not a directory: {component}")
+            next_descriptor = _open_directory_at(
+                descriptor,
+                part,
+                f"{label} {component}",
+                expected=metadata,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return AnchoredDirectory(
+            descriptor=descriptor,
+            display=Path(display),
+            relative=Path(relative),
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def _output_roots():
+    root_fd = _open_root_directory(ROOT, "repository root")
+    dist = manifest = None
+    try:
+        dist_relative = _output_relative_path(DIST, "DIST")
+        manifest_relative = _output_relative_path(MANIFEST_DIR, "MANIFEST_DIR")
+        dist = _open_or_create_output_directory(
+            root_fd,
+            dist_relative,
+            DIST,
+            "DIST",
+        )
+        manifest = _open_or_create_output_directory(
+            root_fd,
+            manifest_relative,
+            MANIFEST_DIR,
+            "MANIFEST_DIR",
+        )
+        yield OutputRoots(dist=dist, manifest=manifest)
+    finally:
+        if manifest is not None:
+            os.close(manifest.descriptor)
+        if dist is not None:
+            os.close(dist.descriptor)
+        os.close(root_fd)
+
+
+def _assert_output_directory_attached(directory, label):
+    root_fd = _open_root_directory(ROOT, "repository root")
+    approved_fd = None
+    try:
+        approved_fd = _open_relative_directory(
+            root_fd,
+            directory.relative.as_posix(),
+            label,
+        )
+        approved = os.fstat(approved_fd)
+        held = os.fstat(directory.descriptor)
+        if approved.st_dev != held.st_dev or approved.st_ino != held.st_ino:
+            raise PackageSafetyError(
+                f"{label} detached from its approved repository-relative path"
+            )
+    finally:
+        if approved_fd is not None:
+            os.close(approved_fd)
+        os.close(root_fd)
+
+
+def _assert_output_roots_attached(output_roots):
+    _assert_output_directory_attached(output_roots.dist, "DIST")
+    _assert_output_directory_attached(output_roots.manifest, "MANIFEST_DIR")
+
+
+def _inventory_directory(
+    directory_fd,
+    source_prefix,
+    logical_prefix,
+    source_root,
+    result,
+    directories,
+):
+    try:
+        with os.scandir(directory_fd) as iterator:
+            names = sorted(entry.name for entry in iterator)
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot scan package directory {logical_prefix}") from exc
+
+    for name in names:
+        source_rel = f"{source_prefix}/{name}" if source_prefix else name
+        logical_rel = f"{logical_prefix}/{name}" if logical_prefix else name
+        metadata = _stat_at(directory_fd, name, f"package source {logical_rel}")
+        if metadata is None:
+            raise PackageSafetyError(f"package source disappeared: {logical_rel}")
+        if stat.S_ISREG(metadata.st_mode):
+            result[logical_rel] = SourceLocator(
+                root=source_root,
+                relative=source_rel,
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+                mode=metadata.st_mode,
+                size=metadata.st_size,
+                mtime_ns=metadata.st_mtime_ns,
+            )
+            continue
+        directories.add(logical_rel)
+        child_fd = _open_directory_at(
+            directory_fd,
+            name,
+            f"package source {logical_rel}",
+            expected=metadata,
+        )
+        try:
+            _inventory_directory(
+                child_fd,
+                source_rel,
+                logical_rel,
+                source_root,
+                result,
+                directories,
+            )
+        finally:
+            os.close(child_fd)
+
+
+def _inventory_entry(root_fd, entry, source_root, result, directories, *, missing_ok):
+    parts = entry.split("/")
+    parent_fd = os.dup(root_fd)
+    try:
+        for index, part in enumerate(parts[:-1]):
+            prefix = "/".join(parts[:index + 1])
+            metadata = _stat_at(parent_fd, part, f"package source {prefix}")
+            if metadata is None:
+                if missing_ok:
+                    return
+                raise PackageSafetyError(f"package source does not exist: {prefix}")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise PackageSafetyError(f"package source parent is not a directory: {prefix}")
+            next_fd = _open_directory_at(
+                parent_fd,
+                part,
+                f"package source {prefix}",
+                expected=metadata,
+            )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        metadata = _stat_at(parent_fd, parts[-1], f"package source {entry}")
+        if metadata is None:
+            if missing_ok:
+                return
+            raise PackageSafetyError(f"package source does not exist: {entry}")
+        if stat.S_ISREG(metadata.st_mode):
+            result[entry] = SourceLocator(
+                root=source_root,
+                relative=entry,
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+                mode=metadata.st_mode,
+                size=metadata.st_size,
+                mtime_ns=metadata.st_mtime_ns,
+            )
+            return
+        directories.add(entry)
+        directory_fd = _open_directory_at(
+            parent_fd,
+            parts[-1],
+            f"package source {entry}",
+            expected=metadata,
+        )
+        try:
+            _inventory_directory(
+                directory_fd,
+                entry,
+                entry,
+                source_root,
+                result,
+                directories,
+            )
+        finally:
+            os.close(directory_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _reject_file_directory_conflicts(files, directories):
+    collisions = sorted(set(files) & set(directories))
+    if collisions:
+        raise PackageSafetyError(
+            f"package path is both a file and directory: {collisions[0]}"
+        )
+    all_paths = set(files) | set(directories)
+    for path in sorted(all_paths):
+        parts = path.split("/")
+        for index in range(1, len(parts)):
+            ancestor = "/".join(parts[:index])
+            if ancestor in files:
+                raise PackageSafetyError(
+                    f"package file conflicts with descendant path: {ancestor} and {path}"
+                )
+
+
+def _read_locator(root_fd, locator, label):
+    parts = locator.relative.split("/")
+    parent_fd = os.dup(root_fd)
+    descriptor = None
+    try:
+        for index, part in enumerate(parts[:-1]):
+            next_fd = _open_directory_at(
+                parent_fd,
+                part,
+                f"{label} {'/'.join(parts[:index + 1])}",
+            )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        preliminary = _stat_at(parent_fd, parts[-1], f"{label} {locator.relative}")
+        if preliminary is None or not stat.S_ISREG(preliminary.st_mode):
+            raise PackageSafetyError(f"{label} is not a regular file: {locator.relative}")
+        locator_fields = {
+            "st_dev": locator.device,
+            "st_ino": locator.inode,
+            "st_mode": locator.mode,
+            "st_size": locator.size,
+            "st_mtime_ns": locator.mtime_ns,
+        }
+        if any(
+            getattr(preliminary, field) != expected
+            for field, expected in locator_fields.items()
+        ):
+            raise PackageSafetyError(f"{label} changed before it was read: {locator.relative}")
+        try:
+            descriptor = os.open(parts[-1], _open_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise PackageSafetyError(f"cannot safely open {label}: {locator.relative}") from exc
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_dev != preliminary.st_dev
+            or before.st_ino != preliminary.st_ino
+        ):
+            raise PackageSafetyError(f"{label} changed while it was opened: {locator.relative}")
+        blocks = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            blocks.append(block)
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            raise PackageSafetyError(f"{label} changed while it was read: {locator.relative}")
+        data = b"".join(blocks)
+        if len(data) != before.st_size:
+            raise PackageSafetyError(f"{label} size changed while it was read: {locator.relative}")
+        final = _stat_at(parent_fd, parts[-1], f"{label} {locator.relative}")
+        if final is None or not stat.S_ISREG(final.st_mode):
+            raise PackageSafetyError(f"{label} changed after it was read: {locator.relative}")
+        if any(getattr(after, field) != getattr(final, field) for field in stable_fields):
+            raise PackageSafetyError(f"{label} changed after it was read: {locator.relative}")
+        return SnapshotEntry(data=data, executable=bool(before.st_mode & 0o111))
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(parent_fd)
+
+
+def _inventory_package(skill, *, snapshot):
+    skill_path = canonical_relative_path(skill["path"], "skill path")
+    allowlist = [
+        canonical_relative_path(entry, f"package_allowlist entry {index}", directory_hint=True)
+        for index, entry in enumerate(skill.get("package_allowlist", []), start=1)
+    ]
+
+    repo_fd = _open_root_directory(ROOT, "repository root")
+    skill_fd = overlay_fd = None
+    try:
+        configured_root = ROOT / skill_path
+        if os.path.abspath(skill["root"]) == os.path.abspath(configured_root):
+            skill_fd = _open_relative_directory(repo_fd, skill_path, "skill path")
+        else:
+            skill_fd = _open_root_directory(skill["root"], "skill root")
+
+        overlay = skill.get("release_overlay")
+        overlay_inventory = {}
+        overlay_directories = set()
+        if overlay:
+            overlay_path = canonical_relative_path(overlay, "release_overlay")
+            overlay_fd = _open_relative_directory(repo_fd, overlay_path, "release_overlay")
+            _inventory_directory(
+                overlay_fd,
+                "",
+                "",
+                "overlay",
+                overlay_inventory,
+                overlay_directories,
+            )
+
+        base_inventory = {}
+        base_directories = set()
+        for entry in allowlist:
+            _inventory_entry(
+                skill_fd,
+                entry,
+                "skill",
+                base_inventory,
+                base_directories,
+                missing_ok=True,
+            )
+
+        inventory = dict(base_inventory)
+        inventory.update(overlay_inventory)
+        inventory = dict(sorted(inventory.items()))
+        _reject_file_directory_conflicts(
+            inventory,
+            base_directories | overlay_directories,
+        )
+        if not snapshot:
+            overlay_path = skill.get("release_overlay")
+            return {
+                rel: (
+                    ROOT / overlay_path / locator.relative
+                    if locator.root == "overlay"
+                    else skill["root"] / locator.relative
+                )
+                for rel, locator in inventory.items()
+            }
+
+        roots = {"skill": skill_fd}
+        if overlay_fd is not None:
+            roots["overlay"] = overlay_fd
+        package_snapshot = {
+            rel: _read_locator(roots[locator.root], locator, "package source")
+            for rel, locator in inventory.items()
+        }
+
+        final_base_inventory = {}
+        final_base_directories = set()
+        for entry in allowlist:
+            _inventory_entry(
+                skill_fd,
+                entry,
+                "skill",
+                final_base_inventory,
+                final_base_directories,
+                missing_ok=True,
+            )
+        final_overlay_inventory = {}
+        final_overlay_directories = set()
+        if overlay_fd is not None:
+            _inventory_directory(
+                overlay_fd,
+                "",
+                "",
+                "overlay",
+                final_overlay_inventory,
+                final_overlay_directories,
+            )
+        if (
+            final_base_inventory != base_inventory
+            or final_base_directories != base_directories
+            or final_overlay_inventory != overlay_inventory
+            or final_overlay_directories != overlay_directories
+        ):
+            raise PackageSafetyError("package source changed while its snapshot was read")
+
+        rebound_skill_fd = rebound_overlay_fd = None
+        try:
+            if os.path.abspath(skill["root"]) == os.path.abspath(configured_root):
+                rebound_skill_fd = _open_relative_directory(repo_fd, skill_path, "skill path")
+            else:
+                rebound_skill_fd = _open_root_directory(skill["root"], "skill root")
+            held = os.fstat(skill_fd)
+            rebound = os.fstat(rebound_skill_fd)
+            if held.st_dev != rebound.st_dev or held.st_ino != rebound.st_ino:
+                raise PackageSafetyError("skill root changed while its snapshot was read")
+            if overlay_fd is not None:
+                rebound_overlay_fd = _open_relative_directory(
+                    repo_fd,
+                    overlay_path,
+                    "release_overlay",
+                )
+                held = os.fstat(overlay_fd)
+                rebound = os.fstat(rebound_overlay_fd)
+                if held.st_dev != rebound.st_dev or held.st_ino != rebound.st_ino:
+                    raise PackageSafetyError(
+                        "release_overlay changed while its snapshot was read"
+                    )
+        finally:
+            if rebound_overlay_fd is not None:
+                os.close(rebound_overlay_fd)
+            if rebound_skill_fd is not None:
+                os.close(rebound_skill_fd)
+        return package_snapshot
+    finally:
+        if overlay_fd is not None:
+            os.close(overlay_fd)
+        if skill_fd is not None:
+            os.close(skill_fd)
+        os.close(repo_fd)
 
 
 def split_toml_path(value):
@@ -147,7 +778,19 @@ def get_skill(config, name):
     defaults = config.get("defaults", {})
     merged = dict(defaults)
     merged.update(skills[name])
-    merged["name"] = name
+    try:
+        safe_name = canonical_relative_path(name, "skill name")
+        if "/" in safe_name:
+            raise PackageSafetyError(f"skill name is not a single path component: {name!r}")
+    except PackageSafetyError as exc:
+        raise SystemExit(str(exc)) from exc
+    merged["name"] = safe_name
+    try:
+        merged["path"] = canonical_relative_path(merged["path"], f"skill {name} path")
+    except KeyError as exc:
+        raise SystemExit(f"Skill '{name}' is missing path") from exc
+    except PackageSafetyError as exc:
+        raise SystemExit(str(exc)) from exc
     merged["root"] = ROOT / merged["path"]
     return merged
 
@@ -160,40 +803,35 @@ def maintenance_root(skill):
 
 
 def iter_files(path):
-    for child in sorted(path.rglob("*")):
-        if child.is_file():
-            yield child
+    if not path.is_dir():
+        return
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        children = []
+        try:
+            with os.scandir(current) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name, reverse=True)
+        except OSError:
+            continue
+        for entry in children:
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            child = Path(entry.path)
+            if stat.S_ISDIR(metadata.st_mode):
+                stack.append(child)
+            elif stat.S_ISREG(metadata.st_mode):
+                yield child
 
 
 def package_files(skill):
-    root = skill["root"]
-    files = []
-    for entry in skill.get("package_allowlist", []):
-        src = root / entry.rstrip("/")
-        if not src.exists():
-            continue
-        if src.is_file():
-            files.append(src)
-        else:
-            files.extend(iter_files(src))
-    return sorted(set(files))
+    return list(package_map(skill).values())
 
 
 def package_map(skill):
-    result = {}
-    for file_path in package_files(skill):
-        result[rel_to_skill(skill, file_path)] = file_path
-
-    overlay = skill.get("release_overlay")
-    if overlay:
-        overlay_root = ROOT / overlay
-        if not overlay_root.is_dir():
-            raise SystemExit(f"Configured release_overlay does not exist: {overlay}")
-        for file_path in iter_files(overlay_root):
-            rel = file_path.relative_to(overlay_root).as_posix()
-            result[rel] = file_path
-
-    return dict(sorted(result.items()))
+    return _inventory_package(skill, snapshot=False)
 
 
 def rel_to_skill(skill, path):
@@ -234,7 +872,14 @@ def parse_frontmatter(text):
     return data
 
 
-def validate_skill(skill):
+def _decode_text(data):
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def validate_skill(skill, package_snapshot=None):
     errors = []
     warnings = []
     root = skill["root"]
@@ -242,38 +887,48 @@ def validate_skill(skill):
     if not root.is_dir():
         return [f"Missing skill directory: {root}"], warnings
 
+    pkg = package_snapshot if package_snapshot is not None else package_map(skill)
+
     for required in skill.get("required_files", []):
-        if not (root / required).is_file():
+        try:
+            required_rel = canonical_relative_path(required, "required_files entry")
+        except PackageSafetyError as exc:
+            errors.append(str(exc))
+            continue
+        if required_rel not in pkg:
             errors.append(f"Missing required file: {skill['path']}/{required}")
 
-    skill_md = root / "SKILL.md"
-    if skill_md.exists():
-        frontmatter = parse_frontmatter(read_text(skill_md))
+    skill_md_item = pkg.get("SKILL.md")
+    if skill_md_item is not None:
+        if package_snapshot is not None:
+            skill_md_text = _decode_text(skill_md_item.data)
+        else:
+            skill_md_text = read_text(skill_md_item)
+        frontmatter = parse_frontmatter(skill_md_text)
         if frontmatter.get("name") != skill["name"]:
             errors.append(f"SKILL.md name mismatch: expected {skill['name']}, got {frontmatter.get('name')!r}")
         if not frontmatter.get("description"):
             errors.append("SKILL.md missing description in frontmatter")
 
-    pkg = package_map(skill)
     if not pkg:
         errors.append("Package allowlist produced no files")
 
     forbidden = skill.get("forbidden_package_globs", [])
-    for rel, file_path in pkg.items():
-        if matches_any(rel, forbidden) or matches_any(file_path.name, forbidden):
+    for rel in pkg:
+        if matches_any(rel, forbidden) or matches_any(Path(rel).name, forbidden):
             errors.append(f"Forbidden file would be packaged: {skill['name']}/{rel}")
 
-    packaged_set = {p.resolve() for p in pkg.values() if skill["root"] in p.resolve().parents}
+    packaged_rels = set(pkg)
     for file_path in iter_files(root):
-        if file_path.resolve() not in packaged_set:
-            rel = rel_to_skill(skill, file_path)
+        rel = rel_to_skill(skill, file_path)
+        if rel not in packaged_rels:
             if matches_any(rel, forbidden) or matches_any(file_path.name, forbidden):
                 warnings.append(f"Extra ignored file in skill directory: {skill['path']}/{rel}")
 
     if skill.get("public", False):
         init_patterns = compile_config_patterns(skill.get("forbidden_init_patterns", [])) if skill.get("init_release", False) else []
-        for rel, file_path in pkg.items():
-            text = read_text(file_path)
+        for rel, item in pkg.items():
+            text = _decode_text(item.data) if package_snapshot is not None else read_text(item)
             if not text:
                 continue
             for label, pattern in PUBLIC_SECRET_PATTERNS:
@@ -303,7 +958,12 @@ def command_list(args):
 def command_validate(args):
     config = load_config()
     skill = get_skill(config, args.skill)
-    errors, warnings = validate_skill(skill)
+    try:
+        snapshot = _inventory_package(skill, snapshot=True)
+        errors, warnings = validate_skill(skill, snapshot)
+    except PackageSafetyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for warning in warnings:
         print(f"warn: {warning}")
     if errors:
@@ -331,8 +991,8 @@ def check_sync(skill):
 
     maintenance = dict(skill)
     maintenance["root"] = source_root
-    maintenance_pkg = filter_sync_map(skill, package_map(maintenance))
-    release_pkg = filter_sync_map(skill, package_map(skill))
+    maintenance_pkg = filter_sync_map(skill, _inventory_package(maintenance, snapshot=True))
+    release_pkg = filter_sync_map(skill, _inventory_package(skill, snapshot=True))
 
     errors = []
     warnings = []
@@ -344,7 +1004,7 @@ def check_sync(skill):
     for rel in sorted(release_rels - maintenance_rels):
         errors.append(f"Release source has no matching maintenance file: {rel}")
     for rel in sorted(maintenance_rels & release_rels):
-        if digest_path(maintenance_pkg[rel]) != digest_path(release_pkg[rel]):
+        if maintenance_pkg[rel] != release_pkg[rel]:
             errors.append(f"Out of sync with maintenance source: {rel}")
 
     return errors, warnings
@@ -353,7 +1013,11 @@ def check_sync(skill):
 def command_check_sync(args):
     config = load_config()
     skill = get_skill(config, args.skill)
-    errors, warnings = check_sync(skill)
+    try:
+        errors, warnings = check_sync(skill)
+    except PackageSafetyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for warning in warnings:
         print(f"warn: {warning}")
     if errors:
@@ -372,73 +1036,784 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def _regular_file_state(path):
+    try:
+        if isinstance(path, AnchoredFile):
+            preliminary = os.stat(
+                path.entry_name,
+                dir_fd=path.directory.descriptor,
+                follow_symlinks=False,
+            )
+        else:
+            preliminary = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot inspect package output: {path.name}") from exc
+    if not stat.S_ISREG(preliminary.st_mode):
+        raise PackageSafetyError(f"package output is not a regular file: {path.name}")
+    descriptor = None
+    try:
+        if isinstance(path, AnchoredFile):
+            descriptor = os.open(
+                path.entry_name,
+                _open_flags(),
+                dir_fd=path.directory.descriptor,
+            )
+        else:
+            descriptor = os.open(path, _open_flags())
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_dev != preliminary.st_dev
+            or before.st_ino != preliminary.st_ino
+        ):
+            raise PackageSafetyError(f"package output changed while opened: {path.name}")
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            raise PackageSafetyError(f"package output changed while read: {path.name}")
+        return RegularFileState(
+            digest=digest.hexdigest(),
+            device=after.st_dev,
+            inode=after.st_ino,
+        )
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot safely read package output: {path.name}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _regular_file_digest(path):
+    state = _regular_file_state(path)
+    return state.digest if state is not None else None
+
+
+def _lstat_optional(path):
+    try:
+        if isinstance(path, AnchoredFile):
+            return os.stat(
+                path.entry_name,
+                dir_fd=path.directory.descriptor,
+                follow_symlinks=False,
+            )
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot inspect package output: {path.name}") from exc
+
+
+def _remove_transaction_output(path):
+    metadata = _lstat_optional(path)
+    if metadata is None:
+        return
+    if stat.S_ISDIR(metadata.st_mode):
+        raise PackageSafetyError(
+            f"transaction output became a directory and was not removed: {path.name}"
+        )
+    try:
+        if isinstance(path, AnchoredFile):
+            os.unlink(path.entry_name, dir_fd=path.directory.descriptor)
+        else:
+            os.unlink(path)
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot remove transaction output: {path.name}") from exc
+
+
+def _write_anchored_temp(directory, logical_name, data):
+    for _attempt in range(100):
+        entry_name = f".skillctl-{secrets.token_hex(8)}-{logical_name}"
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = None
+        created_identity = None
+        try:
+            descriptor = os.open(
+                entry_name,
+                flags,
+                0o600,
+                dir_fd=directory.descriptor,
+            )
+            opened = os.fstat(descriptor)
+            created_identity = (opened.st_dev, opened.st_ino)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise PackageSafetyError(
+                f"cannot create anchored staging file: {logical_name}"
+            ) from exc
+        try:
+            view = memoryview(data)
+            written = 0
+            while written < len(view):
+                count = os.write(descriptor, view[written:])
+                if count <= 0:
+                    raise PackageSafetyError(
+                        f"cannot write anchored staging file: {logical_name}"
+                    )
+                written += count
+            os.fsync(descriptor)
+            final = os.fstat(descriptor)
+            if (final.st_dev, final.st_ino) != created_identity:
+                raise PackageSafetyError(
+                    f"anchored staging inode changed while written: {logical_name}"
+                )
+            expected_state = RegularFileState(
+                digest=hashlib.sha256(data).hexdigest(),
+                device=final.st_dev,
+                inode=final.st_ino,
+            )
+        except BaseException:
+            os.close(descriptor)
+            try:
+                metadata = os.stat(
+                    entry_name,
+                    dir_fd=directory.descriptor,
+                    follow_symlinks=False,
+                )
+                if created_identity is not None and (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                ) == created_identity:
+                    os.unlink(entry_name, dir_fd=directory.descriptor)
+            except OSError:
+                pass
+            raise
+        os.close(descriptor)
+        return directory.file(
+            entry_name,
+            logical_name=logical_name,
+            expected_state=expected_state,
+        )
+    raise PackageSafetyError(f"cannot allocate anchored staging file: {logical_name}")
+
+
+def _write_output_bytes(path, data, *, create=False):
+    if isinstance(path, AnchoredFile):
+        flags = (
+            os.O_WRONLY
+            | os.O_TRUNC
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        if create:
+            flags |= os.O_CREAT | os.O_EXCL
+        descriptor = os.open(
+            path.entry_name,
+            flags,
+            0o600,
+            dir_fd=path.directory.descriptor,
+        )
+        try:
+            view = memoryview(data)
+            written = 0
+            while written < len(view):
+                count = os.write(descriptor, view[written:])
+                if count <= 0:
+                    raise PackageSafetyError(
+                        f"cannot write package output: {path.name}"
+                    )
+                written += count
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    if create:
+        with path.open("xb") as handle:
+            handle.write(data)
+        return
+    path.write_bytes(data)
+
+
+def _unlink_file(path, *, missing_ok=False, expected_state=None, label="transaction file"):
+    bound_state = expected_state
+    if bound_state is None and isinstance(path, AnchoredFile):
+        bound_state = path.expected_state
+    if bound_state is not None:
+        observed = _regular_file_state(path)
+        if observed is None:
+            if missing_ok:
+                return
+            raise PackageSafetyError(f"{label} disappeared before cleanup: {path.name}")
+        if observed != bound_state:
+            raise PackageSafetyError(
+                f"foreign {label} preserved before cleanup: {path.name}"
+            )
+    try:
+        if isinstance(path, AnchoredFile):
+            os.unlink(path.entry_name, dir_fd=path.directory.descriptor)
+        else:
+            path.unlink()
+    except FileNotFoundError:
+        if not missing_ok:
+            raise
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot remove {label}: {path.name}") from exc
+
+
+def _replace_file(source, destination):
+    if isinstance(source, AnchoredFile) and isinstance(destination, AnchoredFile):
+        os.replace(
+            source.entry_name,
+            destination.entry_name,
+            src_dir_fd=source.directory.descriptor,
+            dst_dir_fd=destination.directory.descriptor,
+        )
+        return
+    os.replace(source, destination)
+
+
+def _new_backup_path(destination):
+    if isinstance(destination, AnchoredFile):
+        for _attempt in range(100):
+            entry_name = (
+                f".{destination.entry_name}.{secrets.token_hex(8)}.previous"
+            )
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                descriptor = os.open(
+                    entry_name,
+                    flags,
+                    0o600,
+                    dir_fd=destination.directory.descriptor,
+                )
+            except FileExistsError:
+                continue
+            os.close(descriptor)
+            os.unlink(entry_name, dir_fd=destination.directory.descriptor)
+            return destination.directory.file(entry_name)
+        raise PackageSafetyError(
+            f"cannot allocate package backup: {destination.name}"
+        )
+    descriptor, name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".previous",
+    )
+    os.close(descriptor)
+    backup = Path(name)
+    backup.unlink()
+    return backup
+
+
+def _destination_matches_mutation_source(mutation):
+    try:
+        state = _regular_file_state(mutation.destination)
+    except PackageSafetyError:
+        return False
+    return bool(
+        state is not None
+        and state.digest == mutation.new_digest
+        and state.device == mutation.source_device
+        and state.inode == mutation.source_inode
+    )
+
+
+def _rollback_may_remove_destination(mutation):
+    if not mutation.destination_replace_started:
+        return False
+    if mutation.destination_replace_completed:
+        return True
+    return _destination_matches_mutation_source(mutation)
+
+
+def _rollback_publication(mutations):
+    conflicts = []
+    for mutation in reversed(mutations):
+        try:
+            backup_state = (
+                _regular_file_state(mutation.backup)
+                if mutation.backup is not None
+                else None
+            )
+            if mutation.old_digest is None:
+                if backup_state is not None:
+                    raise PackageSafetyError(
+                        f"unexpected backup for new output: {mutation.destination.name}"
+                    )
+                if _lstat_optional(mutation.destination) is None:
+                    continue
+                if not _rollback_may_remove_destination(mutation):
+                    raise PackageSafetyError(
+                        f"foreign new output preserved during rollback: {mutation.destination.name}"
+                    )
+                _remove_transaction_output(mutation.destination)
+                if _lstat_optional(mutation.destination) is not None:
+                    raise PackageSafetyError(
+                        f"could not remove new output: {mutation.destination.name}"
+                    )
+                continue
+
+            if backup_state is None:
+                if _regular_file_digest(mutation.destination) == mutation.old_digest:
+                    continue
+                raise PackageSafetyError(
+                    f"previous output is unavailable: {mutation.destination.name}"
+                )
+            if (
+                mutation.backup_state is None
+                or backup_state != mutation.backup_state
+            ):
+                raise PackageSafetyError(
+                    f"previous output backup identity changed: {mutation.destination.name}"
+                )
+            if _lstat_optional(mutation.destination) is not None:
+                if not _rollback_may_remove_destination(mutation):
+                    raise PackageSafetyError(
+                        f"foreign output and previous backup preserved: {mutation.destination.name}"
+                    )
+                _remove_transaction_output(mutation.destination)
+            _replace_file(mutation.backup, mutation.destination)
+            if (
+                _regular_file_digest(mutation.destination) != mutation.old_digest
+                or _regular_file_digest(mutation.backup) is not None
+            ):
+                raise PackageSafetyError(
+                    f"previous output was not restored: {mutation.destination.name}"
+                )
+        except (OSError, PackageSafetyError) as exc:
+            conflicts.append(str(exc))
+    if conflicts:
+        raise PackageSafetyError("package transaction_conflict: " + "; ".join(conflicts))
+
+
+def _publish_targets(targets, commit_check=None):
+    mutations = []
+    try:
+        for source, destination, expected_digest in targets:
+            source_state = _regular_file_state(source)
+            if source_state is None:
+                raise PackageSafetyError(f"staged package output is missing: {source.name}")
+            if source_state.digest != expected_digest:
+                raise PackageSafetyError(
+                    f"staged package digest changed after verification: {source.name}"
+                )
+            old_state = _regular_file_state(destination)
+            old_digest = old_state.digest if old_state is not None else None
+            backup = _new_backup_path(destination) if old_digest is not None else None
+            mutation = PublicationMutation(
+                source=source,
+                destination=destination,
+                backup=backup,
+                old_digest=old_digest,
+                new_digest=expected_digest,
+                source_device=source_state.device,
+                source_inode=source_state.inode,
+                backup_state=old_state,
+            )
+            mutations.append(mutation)
+            if backup is not None:
+                _replace_file(destination, backup)
+                if _regular_file_state(backup) != mutation.backup_state:
+                    raise PackageSafetyError(
+                        f"package backup identity mismatch: {destination.name}"
+                    )
+            if _regular_file_state(source) != source_state:
+                raise PackageSafetyError(
+                    f"staged package inode changed before publication: {source.name}"
+                )
+            mutation.destination_replace_started = True
+            _replace_file(source, destination)
+            mutation.destination_replace_completed = True
+            destination_state = _regular_file_state(destination)
+            if (
+                destination_state is None
+                or destination_state.digest != mutation.new_digest
+                or destination_state.device != mutation.source_device
+                or destination_state.inode != mutation.source_inode
+            ):
+                raise PackageSafetyError(
+                    f"published package identity mismatch: {destination.name}"
+                )
+
+        for mutation in mutations:
+            destination_state = _regular_file_state(mutation.destination)
+            if (
+                destination_state is None
+                or destination_state.digest != mutation.new_digest
+                or destination_state.device != mutation.source_device
+                or destination_state.inode != mutation.source_inode
+            ):
+                raise PackageSafetyError(
+                    f"published package identity mismatch: {mutation.destination.name}"
+                )
+            if mutation.backup is not None:
+                if _regular_file_state(mutation.backup) != mutation.backup_state:
+                    raise PackageSafetyError(
+                        f"package backup identity mismatch: {mutation.destination.name}"
+                    )
+        if commit_check is not None:
+            commit_check()
+    except BaseException:
+        _rollback_publication(mutations)
+        raise
+    for mutation in mutations:
+        if mutation.backup is not None:
+            _unlink_file(
+                mutation.backup,
+                expected_state=mutation.backup_state,
+                label="package backup",
+            )
+
+
 def archive_base_name(skill):
-    return f"{skill['name']}-{skill.get('version', '0.0.0')}"
+    version = skill.get("version", "0.0.0")
+    safe_version = canonical_relative_path(str(version), "skill version")
+    if "/" in safe_version:
+        raise PackageSafetyError(f"skill version is not a single path component: {version!r}")
+    return f"{skill['name']}-{safe_version}"
 
 
-def build_tar_gz(skill, pkg):
-    archive = DIST / f"{archive_base_name(skill)}.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
-        for rel, file_path in pkg.items():
-            tar.add(file_path, arcname=f"{skill['name']}/{rel}")
+def _archive_members(skill, snapshot):
+    root_name = canonical_relative_path(skill["name"], "skill name")
+    if "/" in root_name:
+        raise PackageSafetyError(f"skill name is not a single path component: {root_name!r}")
+    directories = {root_name}
+    files = {}
+    for rel, entry in snapshot.items():
+        canonical = canonical_relative_path(rel, "package member")
+        parts = canonical.split("/")
+        for index in range(1, len(parts)):
+            directories.add(f"{root_name}/{'/'.join(parts[:index])}")
+        files[f"{root_name}/{canonical}"] = entry
+    collisions = sorted(directories & set(files))
+    if collisions:
+        raise PackageSafetyError(
+            f"package snapshot contains a file/directory conflict: {collisions[0]}"
+        )
+    return [
+        (name, name in directories, files.get(name))
+        for name in sorted(directories | set(files))
+    ]
+
+
+def _normalized_tar_info(name, *, directory, size=0, executable=False):
+    info = tarfile.TarInfo(name=name)
+    info.type = tarfile.DIRTYPE if directory else tarfile.REGTYPE
+    info.mode = 0o755 if directory or executable else 0o644
+    info.mtime = ARCHIVE_EPOCH
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.size = 0 if directory else size
+    info.pax_headers = {}
+    return info
+
+
+def _write_tar_gz(raw, skill, snapshot):
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        compresslevel=9,
+        fileobj=raw,
+        mtime=ARCHIVE_EPOCH,
+    ) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as tar:
+            for name, directory, entry in _archive_members(skill, snapshot):
+                if directory:
+                    tar.addfile(_normalized_tar_info(name, directory=True))
+                    continue
+                assert entry is not None
+                info = _normalized_tar_info(
+                    name,
+                    directory=False,
+                    size=len(entry.data),
+                    executable=entry.executable,
+                )
+                tar.addfile(info, io.BytesIO(entry.data))
+
+
+def build_tar_gz(skill, snapshot, output_dir=None):
+    logical_name = f"{archive_base_name(skill)}.tar.gz"
+    if output_dir is None or output_dir is MEMORY_OUTPUT:
+        raw = io.BytesIO()
+        _write_tar_gz(raw, skill, snapshot)
+        return MemoryArchive(name=logical_name, data=raw.getvalue())
+    destination = Path(output_dir)
+    archive = destination / logical_name
+    with archive.open("wb") as raw:
+        _write_tar_gz(raw, skill, snapshot)
     return archive
 
 
-def build_zip(skill, pkg):
-    archive = DIST / f"{archive_base_name(skill)}.zip"
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
-        for rel, file_path in pkg.items():
-            zipf.write(file_path, arcname=f"{skill['name']}/{rel}")
+def _normalized_zip_info(name, *, directory, executable=False):
+    filename = f"{name}/" if directory else name
+    info = zipfile.ZipInfo(filename=filename, date_time=ZIP_EPOCH)
+    info.create_system = 3
+    info.extra = b""
+    info.comment = b""
+    info.internal_attr = 0
+    if directory:
+        info.compress_type = zipfile.ZIP_STORED
+        info.external_attr = ((stat.S_IFDIR | 0o755) << 16) | 0x10
+    else:
+        info.compress_type = zipfile.ZIP_DEFLATED
+        mode = 0o755 if executable else 0o644
+        info.external_attr = (stat.S_IFREG | mode) << 16
+    return info
+
+
+def _write_zip(raw, skill, snapshot):
+    with zipfile.ZipFile(
+        raw,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+        strict_timestamps=True,
+    ) as zipf:
+        for name, directory, entry in _archive_members(skill, snapshot):
+            if directory:
+                info = _normalized_zip_info(name, directory=True)
+                zipf.writestr(info, b"")
+                continue
+            assert entry is not None
+            info = _normalized_zip_info(name, directory=False, executable=entry.executable)
+            zipf.writestr(info, entry.data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
+def build_zip(skill, snapshot, output_dir=None):
+    logical_name = f"{archive_base_name(skill)}.zip"
+    if output_dir is None or output_dir is MEMORY_OUTPUT:
+        raw = io.BytesIO()
+        _write_zip(raw, skill, snapshot)
+        return MemoryArchive(name=logical_name, data=raw.getvalue())
+    destination = Path(output_dir)
+    archive = destination / logical_name
+    with archive.open("w+b") as raw:
+        _write_zip(raw, skill, snapshot)
     return archive
+
+
+def _canonical_archive_name(name, *, directory):
+    if not isinstance(name, str) or "\x00" in name or "\\" in name:
+        raise PackageSafetyError(f"unsafe archive member name: {name!r}")
+    raw = name[:-1] if directory and name.endswith("/") else name
+    if not raw or (not directory and name.endswith("/")):
+        raise PackageSafetyError(f"unsafe archive member name: {name!r}")
+    return canonical_relative_path(raw, "archive member")
+
+
+def _validate_member_tree(entries):
+    kinds = {}
+    for name, directory in entries:
+        canonical = _canonical_archive_name(name, directory=directory)
+        if canonical in kinds:
+            raise PackageSafetyError(f"duplicate archive member: {canonical}")
+        kinds[canonical] = directory
+    for name in kinds:
+        parts = name.split("/")
+        for index in range(1, len(parts)):
+            parent = "/".join(parts[:index])
+            if parent in kinds and not kinds[parent]:
+                raise PackageSafetyError(f"archive file is used as a directory: {parent}")
+    return kinds
+
+
+@contextmanager
+def _archive_stream(archive):
+    if isinstance(archive, MemoryArchive):
+        yield io.BytesIO(archive.data)
+        return
+    with Path(archive).open("rb") as handle:
+        yield handle
+
+
+def _inspect_tar(archive):
+    payloads = {}
+    directories = set()
+    with _archive_stream(archive) as stream:
+        with tarfile.open(fileobj=stream, mode="r:gz") as tar:
+            members = tar.getmembers()
+            entries = []
+            for member in members:
+                if not (member.isdir() or member.isfile()):
+                    raise PackageSafetyError(f"unsafe tar member type: {member.name}")
+                entries.append((member.name, member.isdir()))
+            _validate_member_tree(entries)
+            for member in members:
+                canonical = _canonical_archive_name(member.name, directory=member.isdir())
+                if member.isdir():
+                    directories.add(canonical)
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise PackageSafetyError(f"cannot read tar member: {member.name}")
+                payloads[canonical] = extracted.read()
+    return directories, payloads
+
+
+def _zip_member_kind(member):
+    unix_mode = (member.external_attr >> 16) & 0xFFFF
+    file_type = stat.S_IFMT(unix_mode)
+    if file_type == stat.S_IFLNK:
+        raise PackageSafetyError(f"unsafe ZIP symlink member: {member.filename}")
+    if member.is_dir():
+        if file_type not in {0, stat.S_IFDIR}:
+            raise PackageSafetyError(f"unsafe ZIP directory type: {member.filename}")
+        return True
+    if file_type not in {0, stat.S_IFREG}:
+        raise PackageSafetyError(f"unsafe ZIP member type: {member.filename}")
+    return False
+
+
+def _inspect_zip(archive):
+    payloads = {}
+    directories = set()
+    with _archive_stream(archive) as stream:
+        with zipfile.ZipFile(stream, "r") as zipf:
+            members = zipf.infolist()
+            kinds = [(member.filename, _zip_member_kind(member)) for member in members]
+            _validate_member_tree(kinds)
+            for member, (_, directory) in zip(members, kinds):
+                canonical = _canonical_archive_name(member.filename, directory=directory)
+                if directory:
+                    directories.add(canonical)
+                else:
+                    payloads[canonical] = zipf.read(member)
+    return directories, payloads
+
+
+def inspect_archive(archive):
+    if archive.name.endswith(".tar.gz"):
+        return _inspect_tar(archive)
+    if archive.suffix == ".zip":
+        return _inspect_zip(archive)
+    raise PackageSafetyError(f"unsupported archive format: {archive}")
 
 
 def extract_archive(archive, target):
-    if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(target)
-        return
-    if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive, "r") as zipf:
-            zipf.extractall(target)
-        return
-    raise ValueError(f"Unsupported archive format: {archive}")
+    directories, payloads = inspect_archive(archive)
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    for relative in sorted(directories, key=lambda value: (value.count("/"), value)):
+        path = target.joinpath(*relative.split("/"))
+        path.mkdir(exist_ok=True)
+    for relative, data in sorted(payloads.items()):
+        path = target.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as handle:
+                handle.write(data)
+        except FileExistsError as exc:
+            raise PackageSafetyError(f"archive extraction path already exists: {relative}") from exc
 
 
-def verify_archive(skill, archive):
-    with tempfile.TemporaryDirectory() as tmp:
-        extract_archive(archive, tmp)
-        extracted_skill = Path(tmp) / skill["name"]
-        extracted = dict(skill)
-        extracted["root"] = extracted_skill
-        errors, warnings = validate_skill(extracted)
-        for warning in warnings:
-            print(f"warn: packaged {archive.name}: {warning}")
-        if errors:
-            archive.unlink(missing_ok=True)
-            for error in errors:
-                print(f"error: packaged {archive.name}: {error}", file=sys.stderr)
-            return 1
+def verify_archive(skill, archive, snapshot=None):
+    try:
+        directories, payloads = inspect_archive(archive)
+        if snapshot is not None:
+            expected_members = _archive_members(skill, snapshot)
+            expected_directories = {name for name, directory, _entry in expected_members if directory}
+            expected_payloads = {
+                name: entry.data
+                for name, directory, entry in expected_members
+                if not directory and entry is not None
+            }
+            if directories != expected_directories or payloads != expected_payloads:
+                raise PackageSafetyError("archive contents differ from the immutable source snapshot")
+        with tempfile.TemporaryDirectory() as tmp:
+            extract_archive(archive, tmp)
+            extracted_skill = Path(tmp) / skill["name"]
+            extracted = dict(skill)
+            extracted["root"] = extracted_skill
+            extracted["release_overlay"] = None
+            extracted_snapshot = _inventory_package(extracted, snapshot=True)
+            errors, warnings = validate_skill(extracted, extracted_snapshot)
+            for warning in warnings:
+                print(f"warn: packaged {archive.name}: {warning}")
+            if errors:
+                for error in errors:
+                    print(f"error: packaged {archive.name}: {error}", file=sys.stderr)
+                return 1
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, PackageSafetyError) as exc:
+        print(f"error: packaged {archive.name}: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
-def build_archives(skill, pkg):
+def build_archives(skill, snapshot, output_dir=None):
     formats = skill.get("package_formats", ["tar.gz"])
     builders = {
         "tar.gz": build_tar_gz,
         "zip": build_zip,
     }
+    if not isinstance(formats, list) or not formats:
+        raise PackageSafetyError(f"package_formats for {skill['name']} must be a non-empty list")
+    if len(set(formats)) != len(formats):
+        raise PackageSafetyError(f"package_formats for {skill['name']} contains duplicates")
     archives = []
     for fmt in formats:
         if fmt not in builders:
-            raise SystemExit(f"Unsupported package format for {skill['name']}: {fmt}")
-        archives.append(builders[fmt](skill, pkg))
+            raise PackageSafetyError(f"unsupported package format for {skill['name']}: {fmt}")
+        archives.append(builders[fmt](skill, snapshot, output_dir=output_dir))
     return archives
 
 
-def command_pack(args):
-    config = load_config()
-    skill = get_skill(config, args.skill)
-    errors, warnings = validate_skill(skill)
+@contextmanager
+def _package_lock(skill, manifest_root):
+    if fcntl is None:
+        raise PackageSafetyError("packaging requires POSIX fcntl locking")
+    _assert_output_directory_attached(manifest_root, "MANIFEST_DIR")
+    lock_name = f".{skill['name']}.pack.lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(
+            lock_name,
+            flags,
+            0o600,
+            dir_fd=manifest_root.descriptor,
+        )
+    except OSError as exc:
+        raise PackageSafetyError(f"cannot safely open package lock: {lock_name}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PackageSafetyError(f"package lock is not a regular file: {lock_name}")
+        _assert_output_directory_attached(manifest_root, "MANIFEST_DIR")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise PackageSafetyError(f"cannot acquire package lock: {lock_name}") from exc
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(descriptor)
+
+
+def _command_pack_locked(skill, output_roots):
+    try:
+        snapshot = _inventory_package(skill, snapshot=True)
+        errors, warnings = validate_skill(skill, snapshot)
+    except PackageSafetyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for warning in warnings:
         print(f"warn: {warning}")
     if errors:
@@ -446,45 +1821,126 @@ def command_pack(args):
             print(f"error: {error}", file=sys.stderr)
         return 1
 
-    DIST.mkdir(exist_ok=True)
-    MANIFEST_DIR.mkdir(exist_ok=True)
     version = skill.get("version", "0.0.0")
-    pkg = package_map(skill)
-    archives = build_archives(skill, pkg)
+    archive_entries = []
+    manifest_display = None
+    staged_files = []
+    try:
+        archives = build_archives(skill, snapshot, output_dir=MEMORY_OUTPUT)
+        staged_archives = []
+        verified_digests = {}
+        for archive in archives:
+            if not isinstance(archive, MemoryArchive):
+                raise PackageSafetyError("in-memory archive builder returned an unsafe result")
+            expected_digest = hashlib.sha256(archive.data).hexdigest()
+            rc = verify_archive(skill, archive, snapshot)
+            if rc:
+                return rc
+            if hashlib.sha256(archive.data).hexdigest() != expected_digest:
+                raise PackageSafetyError(
+                    f"package archive changed during verification: {archive.name}"
+                )
+            _assert_output_roots_attached(output_roots)
+            staged = _write_anchored_temp(
+                output_roots.dist,
+                archive.name,
+                archive.data,
+            )
+            staged_files.append(staged)
+            if _regular_file_digest(staged) != expected_digest:
+                raise PackageSafetyError(
+                    f"anchored staging digest mismatch: {archive.name}"
+                )
+            staged_archives.append(staged)
+            verified_digests[archive.name] = expected_digest
 
-    for archive in archives:
-        rc = verify_archive(skill, archive)
-        if rc:
-            return rc
-
-    archive_entries = [
-        {
-            "name": archive.name,
-            "sha256": sha256_file(archive),
+        archive_entries = [
+            {
+                "name": archive.name,
+                "sha256": verified_digests[archive.name],
+            }
+            for archive in archives
+        ]
+        manifest = {
+            "skill": skill["name"],
+            "version": version,
+            "status": skill.get("status"),
+            "release_tag": skill.get("release_tag"),
+            "archive": archive_entries[0]["name"],
+            "sha256": archive_entries[0]["sha256"],
+            "archives": archive_entries,
+            "init_release": skill.get("init_release", False),
+            "release_overlay": skill.get("release_overlay"),
+            "package_formats": skill.get("package_formats", ["tar.gz"]),
+            "files": list(snapshot),
         }
-        for archive in archives
-    ]
+        base_name = archive_base_name(skill)
+        manifest_name = f"{base_name}.json"
+        manifest_display = MANIFEST_DIR / manifest_name
+        manifest_bytes = (
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        _assert_output_roots_attached(output_roots)
+        temporary_manifest = _write_anchored_temp(
+            output_roots.manifest,
+            manifest_name,
+            manifest_bytes,
+        )
+        staged_files.append(temporary_manifest)
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        if _regular_file_digest(temporary_manifest) != manifest_digest:
+            raise PackageSafetyError("generated package manifest digest mismatch")
 
-    manifest = {
-        "skill": skill["name"],
-        "version": version,
-        "status": skill.get("status"),
-        "release_tag": skill.get("release_tag"),
-        "archive": archive_entries[0]["name"],
-        "sha256": archive_entries[0]["sha256"],
-        "archives": archive_entries,
-        "init_release": skill.get("init_release", False),
-        "release_overlay": skill.get("release_overlay"),
-        "package_formats": skill.get("package_formats", ["tar.gz"]),
-        "files": list(pkg),
-    }
-    manifest_path = MANIFEST_DIR / f"{skill['name']}-{version}.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        targets = [
+            (
+                archive,
+                output_roots.dist.file(archive.name),
+                verified_digests[archive.name],
+            )
+            for archive in staged_archives
+        ] + [
+            (
+                temporary_manifest,
+                output_roots.manifest.file(manifest_name),
+                manifest_digest,
+            )
+        ]
+        _assert_output_roots_attached(output_roots)
+        _publish_targets(
+            targets,
+            commit_check=lambda: _assert_output_roots_attached(output_roots),
+        )
+    except (OSError, PackageSafetyError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        print(f"error: could not build package: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        for staged in staged_files:
+            try:
+                _unlink_file(
+                    staged,
+                    missing_ok=True,
+                    label="package staging file",
+                )
+            except OSError:
+                pass
     for archive in archive_entries:
         print(f"packed: {DIST / archive['name']}")
         print(f"sha256: {archive['sha256']}")
-    print(f"manifest: {manifest_path}")
+    print(f"manifest: {manifest_display}")
     return 0
+
+
+def command_pack(args):
+    config = load_config()
+    skill = get_skill(config, args.skill)
+    try:
+        with _output_roots() as output_roots:
+            _assert_output_roots_attached(output_roots)
+            with _package_lock(skill, output_roots.manifest):
+                return _command_pack_locked(skill, output_roots)
+    except PackageSafetyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def git_ok():
@@ -496,7 +1952,11 @@ def command_release(args):
     skill = get_skill(config, args.skill)
     tag = args.tag or skill.get("release_tag") or f"{skill['name']}/v{skill.get('version', '0.0.0')}"
 
-    sync_errors, sync_warnings = check_sync(skill)
+    try:
+        sync_errors, sync_warnings = check_sync(skill)
+    except PackageSafetyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for warning in sync_warnings:
         print(f"warn: {warning}")
     if sync_errors:

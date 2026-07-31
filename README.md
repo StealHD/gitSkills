@@ -71,9 +71,10 @@ skills/dbc-skill/
 
 It supports:
 
-- Repository-level agent instructions and control Markdown scaffolds.
-- Project plan, worklog, decision-log, and API/architecture contract templates.
-- Source-of-truth and context-read rules for Codex collaboration.
+- Read-only repository/history audit before control-plane adoption.
+- Mapping-reviewed, hash-approved, no-clobber schema-v3 control scaffolds.
+- Compact validated WORKLOG rotation and explicit archive-only legacy migration.
+- Source-of-truth, path-identity, context-read, interface, architecture, and decision controls.
 
 Skill path:
 
@@ -166,6 +167,7 @@ dbc-skill/v0.1.0
 dbc-skill/v0.1.1
 dbc-skill/v0.1.2
 init-pro/v0.1.0
+init-pro/v0.3.1
 notion-task-manager/v0.1.0
 notion-task-manager/v0.1.1
 ```
