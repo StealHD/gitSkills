@@ -1,0 +1,4 @@
+interface:
+  display_name: "TMDB 电影发现"
+  short_description: "查询中国热门、正在热映、即将上映及高分电影完整信息"
+  default_prompt: "Use $tmdb-movie-discovery to find popular, now-playing, and upcoming movies in China."

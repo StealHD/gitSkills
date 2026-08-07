@@ -19,6 +19,7 @@ Each skill lives in its own directory under `skills/`. The repository root is re
     +-- dbc-skill/
     +-- init-pro/
     +-- notion-task-manager/
+    +-- tmdb-movie-discovery/
 ```
 
 Do not put generated reports, local configs, webhook URLs, tokens, or user-specific IDs in skill source directories.
@@ -102,6 +103,23 @@ Skill path:
 skills/notion-task-manager/
 ```
 
+### tmdb-movie-discovery
+
+`tmdb-movie-discovery` retrieves popular, now-playing, and upcoming films from TMDB.
+
+It supports:
+
+- China-market and Simplified-Chinese results by default.
+- High-rating and vote-count prioritization for popular and now-playing lists.
+- Popularity-first upcoming releases with clear fallback labels.
+- Standard movie metadata, poster links, and TMDB links without storing credentials.
+
+Skill path:
+
+```text
+skills/tmdb-movie-discovery/
+```
+
 ## Install
 
 Install a single skill from its directory path:
@@ -122,6 +140,10 @@ Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/s
 Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/notion-task-manager
 ```
 
+```text
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/tmdb-movie-discovery
+```
+
 Or install manually by copying one skill folder into your Codex skills directory:
 
 ```text
@@ -129,6 +151,7 @@ Or install manually by copying one skill folder into your Codex skills directory
 ~/.codex/skills/dbc-skill
 ~/.codex/skills/init-pro
 ~/.codex/skills/notion-task-manager
+~/.codex/skills/tmdb-movie-discovery
 ```
 
 ## First Use
@@ -140,6 +163,7 @@ skills/codex-daily-report/references/initial-setup.md
 skills/dbc-skill/config/api-targets.example.json
 skills/init-pro/references/
 skills/notion-task-manager/references/notion-config.example.yaml
+skills/tmdb-movie-discovery/references/tmdb-api.md
 ```
 
 Keep local runtime configuration outside public source files.

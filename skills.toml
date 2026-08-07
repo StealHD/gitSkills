@@ -126,3 +126,16 @@ package_formats = [
 ]
 release_tag = "book-skill/v0.1.2"
 notes = "Patch release requiring click-to-download links in the download column and keeping Anna entry pages separate."
+
+[skills."tmdb-movie-discovery"]
+path = "skills/tmdb-movie-discovery"
+maintenance_path = "/Users/stealmac/.codex/skills/tmdb-movie-discovery"
+version = "0.1.0"
+status = "local"
+public = false
+package_formats = [
+  "tar.gz",
+  "zip",
+]
+release_tag = "tmdb-movie-discovery/v0.1.0"
+notes = "Initial local TMDB movie discovery skill for popular, theatrical, and upcoming lists."
