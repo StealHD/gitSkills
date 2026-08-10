@@ -1,4 +1,4 @@
 interface:
   display_name: "TMDB 电影发现"
-  short_description: "查询电影榜单、详情、演职员和流媒体信息"
-  default_prompt: "Use $tmdb-movie-discovery to find Chinese releases, movie details, cast, or streaming options."
+  short_description: "查询影院级电影榜单、详情、演员热作和流媒体信息"
+  default_prompt: "Use $tmdb-movie-discovery to find cinema-ready hit movies for an actor or region."

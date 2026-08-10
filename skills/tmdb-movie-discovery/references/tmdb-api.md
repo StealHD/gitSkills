@@ -24,6 +24,7 @@ The `query` command is intentionally a constrained interface, not a raw TMDB pro
 | Operation | Fixed endpoint | Required input | Result |
 | --- | --- | --- | --- |
 | `search` | `/3/search/movie` | `--query` | Normalized movie candidates |
+| `person-search` | `/3/search/person` | `--query` | Person candidates for ID disambiguation |
 | `movie` | `/3/movie/{movie_id}` | `--movie-id` | One normalized movie record |
 | `credits` | `/3/movie/{movie_id}/credits` | `--movie-id` | Limited cast and crew |
 | `release-dates` | `/3/movie/{movie_id}/release_dates` | `--movie-id`, `--region` | Regional theatrical dates (types 2, 3) |
@@ -31,10 +32,22 @@ The `query` command is intentionally a constrained interface, not a raw TMDB pro
 | `recommendations` | `/3/movie/{movie_id}/recommendations` | `--movie-id` | Normalized related movies |
 | `discover` | `/3/discover/movie` | optional filters | Normalized filtered movies |
 | `trending` | `/3/trending/movie/{day|week}` | optional `--window` | Normalized trending movies |
+| `actor-highlights` | `/3/person/{id}`, `/3/discover/movie`, `/3/movie/{id}` | `--person-id`, optional period | Rich cinema cards for one actor’s films |
+| `region-highlights` | `/3/discover/movie`, `/3/movie/{id}` | `--region`, optional period | Rich cinema cards for regional theatrical films |
 
 `search` always uses `include_adult=false`. `discover` always uses `include_adult=false` and `include_video=false`, and defaults to `sort_by=popularity.desc` unless the caller provides an allowlisted `sort_by` value. The script sends `language`, `region`, and `page` where the endpoint supports them.
 
 `region` actively filters or selects data for `search`, `discover`, `release-dates`, and `watch-providers`. It does not turn `trending` or `recommendations` into a country-specific list; inspect `request.region_applied` before making a regional claim.
+
+## Cinema Highlight Definitions
+
+`actor-highlights` and `region-highlights` are fixed workflows rather than raw `/discover` requests. They first select released candidates, then call the movie detail endpoint with `append_to_response=credits,release_dates,videos,watch/providers` to build stable cinema-display records. TMDB supports appending multiple sub-requests to a top-level detail response, reducing round trips while keeping each request read-only.
+
+- `--period all-time` selects released films by `vote_count.desc`, then locally breaks ties by current popularity and newer release date. It is a long-term audience-interest proxy, not a claim about lifetime box office revenue.
+- `--period recent` selects released films in the last `--recent-days` (365 by default) by `popularity.desc`, then locally breaks ties by vote count and newer release date. Describe it as an as-of-now ranking because TMDB popularity changes.
+- Actor highlights use `with_cast=<person_id>` and primary release dates, so the ranking is global. The requested region enriches each card’s release and provider section but does not filter the actor ranking.
+- Regional highlights use `region=<ISO 3166-1>` and `with_release_type=3|2`. TMDB uses the first matching regional release date; ordering `3|2` prioritizes standard theatrical over limited theatrical.
+- Each card includes poster/backdrop URLs, titles, synopsis, runtime, genres, rating and votes, production companies/countries, directors, cast, trailer, regional theatrical releases and certification, plus country-specific provider data. When an individual detail request fails, retain only list-level metadata and set `detail_status=partial` with `detail_errors`.
 
 ### Discover Filters
 

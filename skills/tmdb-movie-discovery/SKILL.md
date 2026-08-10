@@ -1,6 +1,6 @@
 ---
 name: tmdb-movie-discovery
-description: Retrieve TMDB movie lists and safe read-only movie data, including title searches, movie details, cast and crew, regional theatrical release dates, watch providers, related films, discovery filters, and trending movies. Use when Codex needs current movie recommendations, China-market theatre listings, movie metadata, streaming availability, or TMDB rating comparisons.
+description: Retrieve TMDB movie lists and safe read-only movie data, including title searches, cinema-ready actor and regional hit lists, movie details, cast and crew, regional theatrical release dates, watch providers, related films, discovery filters, and trending movies. Use when Codex needs current movie recommendations, actor filmographies, China-market theatre listings, movie metadata, streaming availability, or TMDB rating comparisons.
 ---
 
 # TMDB Movie Discovery
@@ -61,6 +61,30 @@ python3 scripts/fetch_movies.py query trending --window week --language en-US
 - Use `watch-providers` for country-specific availability. Show the returned TMDB link and include the exact attribution `Data provided by JustWatch` whenever provider data is shown.
 - Use `--limit` from 1 to 50 and `--page` from 1 to 500. Use `--param NAME=VALUE` only with `query discover`; the script rejects non-allowlisted and credential-like parameter names.
 - Read [references/tmdb-api.md](references/tmdb-api.md) before selecting a discovery filter, diagnosing a region-specific result, or changing API behavior.
+
+## Cinema-ready Actor and Regional Highlights
+
+Use a fixed highlight operation when another interface needs richly detailed, cinema-style movie cards. Start with `person-search` for an actor name; do not guess a person ID when there are several plausible results.
+
+```bash
+# Find and let the user confirm the actor ID.
+python3 scripts/fetch_movies.py query person-search --query "莱昂纳多·迪卡普里奥"
+
+# Historical top works: released films ordered by vote count, then current popularity.
+python3 scripts/fetch_movies.py query actor-highlights --person-id 6193 --period all-time --limit 10
+python3 scripts/fetch_movies.py query region-highlights --region CN --period all-time --limit 10
+
+# Recent hot works: released films from the past 365 days ordered by current popularity.
+python3 scripts/fetch_movies.py query actor-highlights --person-id 6193 --period recent --recent-days 365 --region US
+python3 scripts/fetch_movies.py query region-highlights --region US --period recent --recent-days 90 --limit 10
+```
+
+- Treat `actor-highlights` as a global actor ranking. Use `--region` only to enrich each card with that market’s theatrical release and watch-provider information.
+- Treat `region-highlights` as a theatrical regional ranking. It requires a standard or limited theatrical release in the selected market before ranking.
+- Read `result.ranking.strategy`, `as_of_date`, and `region_filters_ranking` before describing a ranking. TMDB popularity is dynamic; do not call it immutable all-time popularity.
+- Render every `result.movies` item as a complete cinema card: poster and backdrop, localized/original title, tagline, synopsis, runtime, genres, dates and certification, rating and vote count, production data, director and cast, trailer, TMDB link, and country-specific watch options.
+- Preserve empty values as “暂无”. If `detail_status` is `partial`, label the card incomplete and use `detail_errors` and `warnings` instead of filling in guessed data.
+- Include the exact `Data provided by JustWatch` attribution whenever a card’s provider data is displayed.
 
 ## Result Handling
 

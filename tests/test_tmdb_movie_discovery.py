@@ -10,6 +10,7 @@ import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr
+from datetime import date
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
@@ -422,6 +423,171 @@ class GenericQueryTests(unittest.TestCase):
         self.assertEqual(result["result"]["providers"]["flatrate"][0]["name"], "Netflix")
         self.assertEqual(len(result["result"]["providers"]["flatrate"]), 1)
         self.assertEqual(result["result"]["providers"]["rent"], [])
+
+
+class CinemaHighlightTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.credentials = tmdb.Credentials("api_key", "TMDB_KEY", "h" * 32)
+
+    def test_highlight_arguments_require_an_actor_and_scope_period_to_highlights(self) -> None:
+        args = tmdb.parse_arguments(
+            [
+                "query",
+                "actor-highlights",
+                "--person-id",
+                "6193",
+                "--period",
+                "recent",
+                "--recent-days",
+                "90",
+            ]
+        )
+        self.assertEqual(args.person_id, 6193)
+        self.assertEqual(args.period, "recent")
+        self.assertEqual(args.recent_days, 90)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                tmdb.parse_arguments(["query", "actor-highlights"])
+            with self.assertRaises(SystemExit):
+                tmdb.parse_arguments(
+                    ["query", "person-search", "--query", "Nolan", "--period", "recent"]
+                )
+
+    def test_highlight_discover_filters_are_fixed_for_actor_and_region(self) -> None:
+        actor = tmdb.parse_arguments(
+            ["query", "actor-highlights", "--person-id", "6193"]
+        )
+        actor_parameters = tmdb.highlight_discover_parameters(actor, today=date(2026, 8, 10))
+        self.assertEqual(actor_parameters["with_cast"], "6193")
+        self.assertEqual(actor_parameters["primary_release_date.lte"], "2026-08-10")
+        self.assertEqual(actor_parameters["sort_by"], "vote_count.desc")
+        self.assertNotIn("region", actor_parameters)
+
+        region = tmdb.parse_arguments(
+            ["query", "region-highlights", "--region", "us", "--period", "recent", "--recent-days", "30"]
+        )
+        region_parameters = tmdb.highlight_discover_parameters(region, today=date(2026, 8, 10))
+        self.assertEqual(region_parameters["region"], "US")
+        self.assertEqual(region_parameters["with_release_type"], "3|2")
+        self.assertEqual(region_parameters["release_date.gte"], "2026-07-11")
+        self.assertEqual(region_parameters["sort_by"], "popularity.desc")
+
+    def test_person_search_returns_safe_disambiguation_candidates(self) -> None:
+        args = tmdb.parse_arguments(["query", "person-search", "--query", "Christopher Nolan"])
+        result = tmdb.generic_report(
+            args=args,
+            credentials=self.credentials,
+            requester=lambda *_args, **_kwargs: {
+                "total_results": 1,
+                "results": [
+                    {
+                        "id": 525,
+                        "name": "Christopher Nolan",
+                        "known_for_department": "Directing",
+                        "popularity": 15.2,
+                        "profile_path": "/nolan.jpg",
+                        "known_for": [
+                            {"id": 27205, "title": "Inception", "media_type": "movie", "release_date": "2010-07-16"}
+                        ],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(result["result"]["kind"], "people")
+        self.assertEqual(result["result"]["results"][0]["id"], 525)
+        self.assertEqual(result["request"]["query"], "Christopher Nolan")
+
+    def test_actor_highlights_hydrate_cinema_cards_and_keep_partial_details(self) -> None:
+        args = tmdb.parse_arguments(
+            [
+                "query",
+                "actor-highlights",
+                "--person-id",
+                "1",
+                "--region",
+                "US",
+                "--period",
+                "recent",
+                "--recent-days",
+                "30",
+                "--limit",
+                "2",
+            ]
+        )
+        discover_calls: list[dict[str, object]] = []
+
+        def requester(path, parameters, _credentials):
+            if path == "/person/1":
+                return {"id": 1, "name": "Actor", "biography": "Biography"}
+            if path == "/discover/movie":
+                discover_calls.append(dict(parameters))
+                return {
+                    "total_results": 2,
+                    "total_pages": 1,
+                    "results": [
+                        movie(10, popularity=100, release_date="2026-08-01"),
+                        movie(11, popularity=50, release_date="2026-07-20"),
+                    ],
+                }
+            if path == "/movie/10":
+                detail = movie(10, popularity=100, release_date="2026-08-01")
+                detail.update(
+                    {
+                        "genres": [{"id": 1, "name": "Action"}],
+                        "runtime": 120,
+                        "backdrop_path": "/backdrop.jpg",
+                        "credits": {
+                            "cast": [{"id": 2, "name": "Co-star", "character": "Friend", "order": 0}],
+                            "crew": [{"id": 3, "name": "Director", "job": "Director"}],
+                        },
+                        "release_dates": {
+                            "results": [
+                                {
+                                    "iso_3166_1": "US",
+                                    "release_dates": [
+                                        {"type": 3, "release_date": "2026-08-01T00:00:00.000Z", "certification": "PG-13"}
+                                    ],
+                                }
+                            ]
+                        },
+                        "videos": {
+                            "results": [
+                                {"type": "Trailer", "site": "YouTube", "official": True, "key": "trailer-key", "name": "Trailer"}
+                            ]
+                        },
+                        "watch/providers": {
+                            "id": 10,
+                            "results": {
+                                "US": {
+                                    "link": "https://www.themoviedb.org/movie/10/watch?locale=US",
+                                    "flatrate": [{"provider_id": 8, "provider_name": "Netflix", "logo_path": "/netflix.jpg"}],
+                                }
+                            },
+                        },
+                    }
+                )
+                return detail
+            if path == "/movie/11":
+                raise tmdb.RequestFailure("TMDB request failed with HTTP 503.")
+            raise AssertionError(path)
+
+        result = tmdb.cinema_highlight_report(
+            args=args,
+            credentials=self.credentials,
+            requester=requester,
+            genre_fetcher=lambda *_args, **_kwargs: {1: "Action"},
+            today=date(2026, 8, 10),
+        )
+        card = result["result"]["movies"][0]
+        self.assertEqual(discover_calls[0]["with_cast"], "1")
+        self.assertEqual(discover_calls[0]["primary_release_date.gte"], "2026-07-11")
+        self.assertEqual(card["detail_status"], "complete")
+        self.assertEqual(card["directors"][0]["name"], "Director")
+        self.assertEqual(card["trailer"]["url"], "https://www.youtube.com/watch?v=trailer-key")
+        self.assertEqual(card["regional_release"]["preferred"]["certification"], "PG-13")
+        self.assertEqual(card["watch_providers"]["attribution"], "Data provided by JustWatch")
+        self.assertEqual(result["result"]["movies"][1]["detail_status"], "partial")
+        self.assertIn("11", result["result"]["detail_errors"])
 
 
 @unittest.skipUnless(

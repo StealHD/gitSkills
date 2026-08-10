@@ -114,6 +114,7 @@ It supports:
 - Popularity-first upcoming releases with clear fallback labels.
 - Standard movie metadata, poster links, and TMDB links without storing credentials.
 - Safe title search, details, cast and crew, regional theatrical dates, watch providers, related films, discovery filters, and trending movies.
+- Cinema-ready actor and regional historical/recent hit cards with trailers, casts, release details, and provider availability.
 
 Skill path:
 
