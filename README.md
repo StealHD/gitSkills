@@ -122,6 +122,12 @@ Skill path:
 skills/tmdb-movie-discovery/
 ```
 
+OpenClaw users can install the same AgentSkills-compatible folder with:
+
+```text
+openclaw skills install /absolute/path/to/skills/tmdb-movie-discovery --as tmdb-movie-discovery
+```
+
 ## Install
 
 Install a single skill from its directory path:

@@ -7,6 +7,8 @@ description: Retrieve TMDB movie lists and safe read-only movie data, including 
 
 Retrieve up-to-date TMDB movie data through `scripts/fetch_movies.py`. Default to China (`CN`) and Simplified Chinese (`zh-CN`) unless the user specifies another market or language. The script emits JSON to standard output and diagnostics only to standard error.
 
+Run from this Skill directory in Codex. In OpenClaw, invoke the script with `python3 {baseDir}/scripts/fetch_movies.py ...` so execution does not depend on the agent workspace's current directory. Read [references/openclaw.md](references/openclaw.md) before installing or configuring this Skill for OpenClaw.
+
 Use `TMDB_READ_KEY` for an API Read Access Token. When it is absent, use a v3 API Key in `TMDB_KEY`. Never put either credential in a prompt, source file, command output, or generated artifact.
 
 ## Ranked Lists

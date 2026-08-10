@@ -138,4 +138,4 @@ package_formats = [
   "zip",
 ]
 release_tag = "tmdb-movie-discovery/v0.1.0"
-notes = "Local TMDB movie discovery skill with controlled queries and cinema-ready actor or regional historical/recent hit cards."
+notes = "Local AgentSkills-compatible TMDB skill with controlled queries and cinema-ready actor or regional historical/recent hit cards."
