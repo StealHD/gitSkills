@@ -138,4 +138,4 @@ package_formats = [
   "zip",
 ]
 release_tag = "tmdb-movie-discovery/v0.1.0"
-notes = "Initial local TMDB movie discovery skill for popular, theatrical, and upcoming lists."
+notes = "Local TMDB movie discovery skill with ranked lists and controlled read-only query operations."

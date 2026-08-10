@@ -1,26 +1,83 @@
 # TMDB API Reference
 
-## Authentication
+## Authentication and Transport
 
-Prefer `TMDB_READ_KEY` for the API Read Access Token and send it as `Authorization: Bearer <token>`. If it is absent, `TMDB_KEY` may hold a 32-character v3 API Key and is sent as the `api_key` query parameter. Keep both values outside source control.
+Prefer `TMDB_READ_KEY` for an API Read Access Token and send it as `Authorization: Bearer <token>`. If it is absent, `TMDB_KEY` may hold a 32-character v3 API Key and is sent as the `api_key` query parameter. Keep both values outside source control.
 
-If `TMDB_READ_KEY` is present but returns HTTP 401 or 403, stop and fix that variable. Do not silently switch to `TMDB_KEY`, because doing so hides a broken preferred credential.
+If `TMDB_READ_KEY` returns HTTP 401 or 403, stop and fix that variable. Do not silently switch to `TMDB_KEY`, because that hides a broken preferred credential.
 
-## Endpoints
+Use only TMDB v3 `GET` endpoints. Set a 15-second timeout. Retry HTTP 429 and temporary 5xx failures at most three times, honoring a numeric `Retry-After` value when present. Do not retry HTTP 401 or 403.
 
-- `GET /3/movie/popular`: popularity-ranked movie list.
-- `GET /3/movie/now_playing`: theatrical movies; accepts `language`, `region`, and `page`.
-- `GET /3/movie/upcoming`: upcoming theatrical movies; accepts `language`, `region`, and `page`.
-- `GET /3/genre/movie/list`: resolve `genre_ids` in the requested language.
+## Ranked-list Endpoints
 
-Send `language`, `region`, and `page` to all list endpoints. The `region` must be an ISO 3166-1 code, such as `CN`.
+- `GET /3/movie/popular`: globally popularity-ranked movies. A supplied `region` is not evidence that a title has a theatrical release there.
+- `GET /3/movie/now_playing`: current theatrical movies; supports `language`, `region`, and `page`.
+- `GET /3/movie/upcoming`: upcoming theatrical movies; supports `language`, `region`, and `page`.
+- `GET /3/genre/movie/list`: resolve list-item `genre_ids` in the requested language.
 
-## Response Fields
+`CN` is the ISO 3166-1 code for China. Localized fields and posters can be absent.
 
-List items can include `id`, `title`, `original_title`, `release_date`, `vote_average`, `vote_count`, `popularity`, `genre_ids`, `overview`, and `poster_path`. None of the localized fields or the poster is guaranteed to be present.
+## Allowlisted Generic Queries
 
-Build poster links with `https://image.tmdb.org/t/p/w500` plus a non-empty `poster_path`. Build movie links with `https://www.themoviedb.org/movie/<id>`.
+The `query` command is intentionally a constrained interface, not a raw TMDB proxy. It never accepts an endpoint, URL, request method, headers, or authentication parameter from the caller.
 
-## Rate Limits and Failures
+| Operation | Fixed endpoint | Required input | Result |
+| --- | --- | --- | --- |
+| `search` | `/3/search/movie` | `--query` | Normalized movie candidates |
+| `movie` | `/3/movie/{movie_id}` | `--movie-id` | One normalized movie record |
+| `credits` | `/3/movie/{movie_id}/credits` | `--movie-id` | Limited cast and crew |
+| `release-dates` | `/3/movie/{movie_id}/release_dates` | `--movie-id`, `--region` | Regional theatrical dates (types 2, 3) |
+| `watch-providers` | `/3/movie/{movie_id}/watch/providers` | `--movie-id`, `--region` | Country-specific providers |
+| `recommendations` | `/3/movie/{movie_id}/recommendations` | `--movie-id` | Normalized related movies |
+| `discover` | `/3/discover/movie` | optional filters | Normalized filtered movies |
+| `trending` | `/3/trending/movie/{day|week}` | optional `--window` | Normalized trending movies |
 
-Use a 15-second request timeout. For HTTP 429 and temporary server failures, retry at most three times, respecting a numeric `Retry-After` value when present. Do not retry HTTP 401 or 403. Return partial results with category errors when only one list fails.
+`search` always uses `include_adult=false`. `discover` always uses `include_adult=false` and `include_video=false`, and defaults to `sort_by=popularity.desc` unless the caller provides an allowlisted `sort_by` value. The script sends `language`, `region`, and `page` where the endpoint supports them.
+
+`region` actively filters or selects data for `search`, `discover`, `release-dates`, and `watch-providers`. It does not turn `trending` or `recommendations` into a country-specific list; inspect `request.region_applied` before making a regional claim.
+
+### Discover Filters
+
+Pass filters only as repeated `--param NAME=VALUE` values. Supported names are:
+
+```text
+certification
+certification.gte
+certification.lte
+certification_country
+primary_release_year
+primary_release_date.gte
+primary_release_date.lte
+release_date.gte
+release_date.lte
+sort_by
+vote_average.gte
+vote_average.lte
+vote_count.gte
+vote_count.lte
+with_cast
+with_companies
+with_crew
+with_genres
+with_keywords
+with_origin_country
+with_original_language
+with_people
+with_release_type
+with_runtime.gte
+with_runtime.lte
+without_companies
+without_genres
+without_keywords
+year
+```
+
+Reject all other names, including `api_key`, `authorization`, `session_id`, `guest_session_id`, and `access_token`. Do not add account, list, rating, watchlist, or mutation endpoints to this interface without a separate security and release review.
+
+For a region-specific theatrical search, pair `--region` with a theatrical `with_release_type` such as `3`. Confirm one movie's actual regional theatrical release through `release-dates` when exact availability matters.
+
+## Rendering and Attribution
+
+Build poster links with `https://image.tmdb.org/t/p/w500` plus a non-empty `poster_path`; build movie links with `https://www.themoviedb.org/movie/<id>`. Preserve empty values when TMDB supplies no localized title, overview, poster, date, provider, or link.
+
+Watch-provider availability is supplied through TMDB's JustWatch integration. Whenever it is displayed, include the exact attribution `Data provided by JustWatch`; use TMDB's returned watch link only, not a fabricated provider deep link.

@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
@@ -266,6 +267,161 @@ class ReportTests(unittest.TestCase):
         )
         self.assertEqual(result["categories"]["popular"]["results"][0]["genres"], [])
         self.assertTrue(result["warnings"])
+
+
+class GenericQueryArgumentTests(unittest.TestCase):
+    def test_ranked_list_mode_remains_available(self) -> None:
+        args = tmdb.parse_arguments(["--category", "now-playing", "--limit", "5"])
+        self.assertEqual(args.mode, "lists")
+        self.assertEqual(args.category, "now-playing")
+        self.assertEqual(args.limit, 5)
+
+    def test_discover_accepts_only_allowlisted_filters(self) -> None:
+        args = tmdb.parse_arguments(
+            [
+                "query",
+                "discover",
+                "--region",
+                "us",
+                "--language",
+                "en-US",
+                "--param",
+                "with_genres=878",
+                "--param",
+                "vote_average.gte=7.5",
+            ]
+        )
+        self.assertEqual(args.mode, "query")
+        self.assertEqual(args.region, "US")
+        self.assertEqual(
+            args.discover_parameters,
+            {"with_genres": "878", "vote_average.gte": "7.5"},
+        )
+
+    def test_query_rejects_sensitive_and_unknown_filters(self) -> None:
+        for parameter in ("api_key=secret-value", "raw_url=https://example.invalid"):
+            with self.subTest(parameter=parameter), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    tmdb.parse_arguments(["query", "discover", "--param", parameter])
+
+    def test_query_requires_its_specific_identifier(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                tmdb.parse_arguments(["query", "search"])
+            with self.assertRaises(SystemExit):
+                tmdb.parse_arguments(["query", "credits"])
+            with self.assertRaises(SystemExit):
+                tmdb.parse_arguments(
+                    ["query", "search", "--query", "Inception", "--param", "with_genres=878"]
+                )
+
+
+class GenericQueryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.credentials = tmdb.Credentials("api_key", "TMDB_KEY", "g" * 32)
+
+    def test_search_uses_a_fixed_endpoint_and_normalizes_movies(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def requester(path, parameters, _credentials):
+            calls.append((path, dict(parameters)))
+            return {"results": [movie(13)], "total_results": 1}
+
+        args = tmdb.parse_arguments(
+            ["query", "search", "--query", "  Inception  ", "--region", "US", "--limit", "1"]
+        )
+        result = tmdb.generic_report(
+            args=args,
+            credentials=self.credentials,
+            requester=requester,
+            genre_fetcher=lambda *_args, **_kwargs: {1: "Action"},
+        )
+        self.assertEqual(calls, [("/search/movie", {"query": "Inception", "language": "zh-CN", "region": "US", "page": 1, "include_adult": "false"})])
+        self.assertEqual(result["request"]["query"], "Inception")
+        self.assertEqual(result["result"]["results"][0]["genres"], ["Action"])
+        self.assertNotIn("selection_status", result["result"]["results"][0])
+
+    def test_discover_defaults_to_popularity_and_never_accepts_a_route(self) -> None:
+        args = tmdb.parse_arguments(
+            ["query", "discover", "--param", "with_release_type=3", "--page", "2"]
+        )
+        path, parameters = tmdb.generic_endpoint(args)
+        self.assertEqual(path, "/discover/movie")
+        self.assertEqual(parameters["sort_by"], "popularity.desc")
+        self.assertEqual(parameters["with_release_type"], "3")
+        self.assertNotIn("url", parameters)
+
+    def test_credits_limits_cast_and_crew(self) -> None:
+        args = tmdb.parse_arguments(["query", "credits", "--movie-id", "12", "--limit", "1"])
+        result = tmdb.generic_report(
+            args=args,
+            credentials=self.credentials,
+            requester=lambda *_args, **_kwargs: {
+                "id": 12,
+                "cast": [
+                    {"id": 1, "name": "Actor One", "character": "Lead", "order": 0},
+                    {"id": 2, "name": "Actor Two", "character": "Other", "order": 1},
+                ],
+                "crew": [
+                    {"id": 3, "name": "Director", "job": "Director", "department": "Directing"},
+                    {"id": 4, "name": "Writer", "job": "Writer", "department": "Writing"},
+                ],
+            },
+        )
+        self.assertEqual(result["result"]["kind"], "credits")
+        self.assertEqual([person["name"] for person in result["result"]["cast"]], ["Actor One"])
+        self.assertEqual([person["job"] for person in result["result"]["crew"]], ["Director"])
+
+    def test_release_dates_filter_to_the_requested_regional_theatrical_rows(self) -> None:
+        args = tmdb.parse_arguments(
+            ["query", "release-dates", "--movie-id", "12", "--region", "CN", "--limit", "1"]
+        )
+        result = tmdb.generic_report(
+            args=args,
+            credentials=self.credentials,
+            requester=lambda *_args, **_kwargs: {
+                "id": 12,
+                "results": [
+                    {
+                        "iso_3166_1": "CN",
+                        "release_dates": [
+                            {"type": 2, "release_date": "2026-08-01T00:00:00.000Z"},
+                            {"type": 3, "release_date": "2026-08-02T00:00:00.000Z"},
+                            {"type": 4, "release_date": "2026-08-03T00:00:00.000Z"},
+                        ],
+                    },
+                    {"iso_3166_1": "US", "release_dates": [{"type": 3}]},
+                ],
+            },
+        )
+        rows = result["result"]["theatrical_release_dates"]
+        self.assertEqual([row["type"] for row in rows], [2])
+        self.assertEqual(result["result"]["region"], "CN")
+
+    def test_watch_providers_include_required_attribution_and_region(self) -> None:
+        args = tmdb.parse_arguments(
+            ["query", "watch-providers", "--movie-id", "12", "--region", "US", "--limit", "1"]
+        )
+        result = tmdb.generic_report(
+            args=args,
+            credentials=self.credentials,
+            requester=lambda *_args, **_kwargs: {
+                "id": 12,
+                "results": {
+                    "US": {
+                        "link": "https://www.themoviedb.org/watch/12",
+                        "flatrate": [
+                            {"provider_id": 8, "provider_name": "Netflix", "logo_path": "/logo.png"},
+                            {"provider_id": 9, "provider_name": "Hulu", "logo_path": "/hulu.png"},
+                        ],
+                    }
+                },
+            },
+        )
+        self.assertEqual(result["result"]["attribution"], "Data provided by JustWatch")
+        self.assertEqual(result["result"]["providers"]["flatrate"][0]["name"], "Netflix")
+        self.assertEqual(len(result["result"]["providers"]["flatrate"]), 1)
+        self.assertEqual(result["result"]["providers"]["rent"], [])
 
 
 @unittest.skipUnless(

@@ -105,7 +105,7 @@ skills/notion-task-manager/
 
 ### tmdb-movie-discovery
 
-`tmdb-movie-discovery` retrieves popular, now-playing, and upcoming films from TMDB.
+`tmdb-movie-discovery` retrieves ranked movie lists and constrained read-only movie data from TMDB.
 
 It supports:
 
@@ -113,6 +113,7 @@ It supports:
 - High-rating and vote-count prioritization for popular and now-playing lists.
 - Popularity-first upcoming releases with clear fallback labels.
 - Standard movie metadata, poster links, and TMDB links without storing credentials.
+- Safe title search, details, cast and crew, regional theatrical dates, watch providers, related films, discovery filters, and trending movies.
 
 Skill path:
 
