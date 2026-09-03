@@ -1598,57 +1598,69 @@ def _html_report_rows_from_batch(
     return rows, failures, retrieval_gaps
 
 
+def _html_sql_card(item: dict[str, Any], idx: int) -> str:
+    query_id = item.get("template_id") or item.get("query_id") or item.get("fingerprint") or f"SQL {idx}"
+    metrics = [
+        ("avg_ms", item.get("avg_ms")),
+        ("exec_count", item.get("exec_count")),
+        ("load", item.get("load")),
+        ("rows_examined_avg", item.get("rows_examined_avg")),
+        ("lock_time_avg_ms", item.get("lock_time_avg_ms")),
+    ]
+    metric_html = "".join(
+        f"<span><b>{_html_escape(key)}</b>{_html_escape(value)}</span>"
+        for key, value in metrics
+        if value is not None
+    )
+    context = _format_sql_context(item, include_unknown=True)
+    template_sql = item.get("template_sql")
+    sample_sql = item.get("sample_sql") or item.get("sql")
+    sql_blocks: list[str] = []
+    if template_sql:
+        sql_blocks.append(
+            '<div class="sql-body-label">模板SQL / fingerprint</div>'
+            f"<pre><code>{_html_escape(template_sql)}</code></pre>"
+        )
+    if sample_sql and sample_sql != template_sql:
+        sql_blocks.append(
+            '<div class="sql-body-label">代表SQL / 具体SQL</div>'
+            f"<pre><code>{_html_escape(sample_sql)}</code></pre>"
+        )
+    if not sql_blocks:
+        sql_blocks.append(
+            '<div class="sql-body-label">SQL</div>'
+            "<pre><code>SQL 原文缺失</code></pre>"
+        )
+    return (
+        '<article class="sql-card">'
+        '<div class="sql-title">'
+        f'<span class="sql-index">{idx}</span>'
+        f'<span class="query-id">{_html_escape(query_id)}</span>'
+        f'<span class="sql-kind">{_html_escape(context)}</span>'
+        '</div>'
+        f'<div class="sql-metrics">{metric_html}</div>'
+        + "".join(sql_blocks)
+        + "</article>"
+    )
+
+
 def _html_sql_cards(sql_entries: list[dict[str, Any]]) -> str:
     if not sql_entries:
         return ""
-    cards: list[str] = []
-    for idx, item in enumerate(sql_entries[:5], 1):
-        query_id = item.get("template_id") or item.get("query_id") or item.get("fingerprint") or f"SQL {idx}"
-        metrics = [
-            ("avg_ms", item.get("avg_ms")),
-            ("exec_count", item.get("exec_count")),
-            ("load", item.get("load")),
-            ("rows_examined_avg", item.get("rows_examined_avg")),
-            ("lock_time_avg_ms", item.get("lock_time_avg_ms")),
-        ]
-        metric_html = "".join(
-            f"<span><b>{_html_escape(key)}</b>{_html_escape(value)}</span>"
-            for key, value in metrics
-            if value is not None
+    visible_limit = 5
+    cards = [_html_sql_card(item, idx) for idx, item in enumerate(sql_entries[:visible_limit], 1)]
+    remaining = sql_entries[visible_limit:]
+    if remaining:
+        more_cards = "".join(
+            _html_sql_card(item, idx)
+            for idx, item in enumerate(remaining, visible_limit + 1)
         )
-        context = _format_sql_context(item, include_unknown=True)
-        template_sql = item.get("template_sql")
-        sample_sql = item.get("sample_sql") or item.get("sql")
-        sql_blocks: list[str] = []
-        if template_sql:
-            sql_blocks.append(
-                '<div class="sql-body-label">模板SQL / fingerprint</div>'
-                f"<pre><code>{_html_escape(template_sql)}</code></pre>"
-            )
-        if sample_sql and sample_sql != template_sql:
-            sql_blocks.append(
-                '<div class="sql-body-label">代表SQL / 具体SQL</div>'
-                f"<pre><code>{_html_escape(sample_sql)}</code></pre>"
-            )
-        if not sql_blocks:
-            sql_blocks.append(
-                '<div class="sql-body-label">SQL</div>'
-                "<pre><code>SQL 原文缺失</code></pre>"
-            )
         cards.append(
-            '<article class="sql-card">'
-            '<div class="sql-title">'
-            f'<span class="sql-index">{idx}</span>'
-            f'<span class="query-id">{_html_escape(query_id)}</span>'
-            f'<span class="sql-kind">{_html_escape(context)}</span>'
-            '</div>'
-            f'<div class="sql-metrics">{metric_html}</div>'
-            + "".join(sql_blocks)
-            + "</article>"
+            '<details class="more-sql">'
+            f"<summary>展开查看其余 {len(remaining)} 条 SQL</summary>"
+            f'<div class="sql-list">{more_cards}</div>'
+            "</details>"
         )
-    more = len(sql_entries) - 5
-    if more > 0:
-        cards.append(f'<p class="muted">还有 {more} 条符合阈值的 SQL 已折叠在 JSON 结果中。</p>')
     return (
         '<details class="sql-details" open>'
         f"<summary>慢 SQL 语句（avg_ms &gt; 1000，共 {len(sql_entries)} 条）</summary>"
