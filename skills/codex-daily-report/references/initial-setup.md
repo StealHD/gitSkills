@@ -1,83 +1,39 @@
-# Initial Setup
+# Local Runtime Setup
 
-Use this when configuring the skill for a new machine or automation.
+配置和 secret 必须位于 skill 目录之外。
 
-## Required Runtime Values
+## Profile
 
-- `output_root`: directory where generated report files are stored.
-- `exclude_file`: optional external noise-session exclusion JSON file.
-- `WECOM_WEBHOOK_URL`: optional WeCom bot webhook URL for sending daily reports.
+复制 `report-profile.example.json` 为本地 `report-profile.local.json`，填写：
 
-Keep these values outside the packaged skill. Do not commit local user paths, webhook URLs, tokens, or user IDs into skill source files.
+- `output_root`：持久化报告根目录。
+- `manual_report_files`：可选的手工日报 UTF-8 文本文件绝对路径列表。文件按日期标题分段，标题下使用编号或项目符号；采集时只读取与 `--date` 完全匹配的分段。
+- `work_cwd_patterns/work_keywords`：个人工作范围；自动候选必须同时命中工作目录和工作关键词。
+- `include_marker_prefix_chars`：`include_markers` 的开头窗口及 `include_tail_markers` 的末尾窗口长度，默认 `120` 个字符。
+- `include_tail_markers`：仅配置可在长用户指令末尾生效的明确日报补充句式，避免普通“日报记录”出现在方案结尾时误收。
+- `scope_override_max_chars`：范围纠偏短指令的最大字符数，默认 `500`；长方案或自动化正文不会覆盖日报范围。
+- `exclude_turn_patterns/report_maintenance_patterns`：turn 级排除规则。
+- `submitted_exclude_patterns`：保存和发送前的本地文本门禁。
+- `send_policy`：默认仅 `daily=true`。
 
-## Directory Layout
+本地 profile 文件不得纳入发布包或版本控制。
 
-For a report date `YYYY-MM-DD`, compute `YYYY-MM` and write persistent files under:
+## WeCom secret
 
-```text
-{output_root}/YYYY-MM/
-```
-
-Expected files:
-
-```text
-{output_root}/YYYY-MM/codex-session-report-YYYY-MM-DD.md
-{output_root}/YYYY-MM/codex-daily-submit-YYYY-MM-DD.md
-{output_root}/YYYY-MM/codex-daily-submit-YYYY-MM.md
-{output_root}/YYYY-MM/codex-weekly-submit-YYYY-Www.md
-{output_root}/YYYY-MM/codex-weekly-submit-YYYY-MM.md
-{output_root}/YYYY-MM/codex-monthly-submit-YYYY-MM.md
-```
-
-For cross-month weekly reports, read only the daily root files from the involved month directories:
-
-```text
-{output_root}/YYYY-MM/codex-daily-submit-YYYY-MM.md
-```
-
-## Exclusion File
-
-Use the bundled file by default:
-
-```text
-references/session-exclusions.json
-```
-
-If an automation provides a custom exclusion file, pass it explicitly:
+将完整 webhook URL 单独写入本地文件，并设为仅当前用户可读写：
 
 ```bash
-python3 /path/to/skill/scripts/codex_session_daily_report.py \
-  --date YYYY-MM-DD \
-  --tz Asia/Shanghai \
-  --exclude-file /path/to/session-exclusions.json \
-  --output {output_root}/YYYY-MM/codex-session-report-YYYY-MM-DD.md
+chmod 600 /absolute/path/wecom-webhook.local.txt
 ```
 
-## WeCom
+自动化 prompt 只引用 secret 文件路径，不包含密钥正文。
 
-Set the webhook at runtime:
+## Layout
 
-```bash
-export WECOM_WEBHOOK_URL='<wecom-webhook-url>'
-```
+每月目录位于 `<output_root>/YYYY-MM/`，包含 Markdown 兼容稿和：
 
-Send the daily report with:
+- `codex-evidence-YYYY-MM-DD.json`
+- `codex-work-items-YYYY-MM-DD.json`
+- `codex-run-state-YYYY-MM-DD.json`
 
-```bash
-python3 /path/to/skill/scripts/send_wecom_report.py \
-  --date YYYY-MM-DD \
-  --content-file {output_root}/YYYY-MM/codex-daily-submit-YYYY-MM-DD.md \
-  --msgtype text \
-  --webhook-url "$WECOM_WEBHOOK_URL"
-```
-
-Use `--dry-run` for testing unless the user explicitly asks to send a real message.
-
-## Retention
-
-- Daily root data: `codex-daily-submit-YYYY-MM.md`, keep 12 months.
-- Weekly records: `codex-weekly-submit-YYYY-MM.md`, keep 12 months.
-- Monthly summaries: `codex-monthly-submit-YYYY-MM.md`, keep 12 months by policy.
-- Raw evidence reports: `codex-session-report-YYYY-MM-DD.md`, keep only as needed for traceability; configure external cleanup if storage must be bounded.
-
-The daily and weekly scripts support `--retention-months` for explicit overrides.
+安装后先运行单元测试和 shadow-run；shadow-run 禁止发送企业微信。

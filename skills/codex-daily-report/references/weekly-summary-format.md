@@ -1,59 +1,128 @@
-# Weekly Summary Format
+# Weekly Report Contract
 
-Use this when the user asks for 周报, 周报记录, 本周总结, or to maintain weekly records.
+周报由 `reportctl.py aggregate --type weekly` 从本周所有已验证 WorkItem 生成，面向领导汇报。事实完整性优先于压缩篇幅；不得把已有对象、指标、根因、处理动作、交付结果和协调状态改写成空泛的一句话。
 
-## Goal
+## 唯一正式格式
 
-Produce a short business-facing weekly summary from daily submitted reports. Do not read or list raw sessions unless daily submitted reports are missing and the user explicitly asks to reconstruct from evidence.
+```text
+YYYY-Www 周报
 
-Weekly records are stored in monthly files such as `codex-weekly-submit-YYYY-MM.md`; do not maintain yearly weekly files.
+本周重点工作
 
-## Style
+一、性能优化与问题处置
 
-- Write weekly summaries in item-paragraph style: `第一项：标题` followed by one concise paragraph.
-- Default weekly summary has 4-6 items when there is enough material; merge small related work by theme.
-- Default next-week plan has 3 items.
-- Merge by week-level themes, not by day.
-- Keep evidence completeness for database/SQL/alert work: instance/server, database, table/object, SQL fragment or SQL_ID, and status when available.
-- Use research tone for investigation work: `排查显示`, `完成调研`, `完成验证`, `方案推进`, `待继续确认`.
-- Generate a separate `下周计划` section when the user asks for weekly planning or the current week contains clear follow-up work.
-- Do not include Codex/session/tool counts.
+第1项：对象与范围。关键事实、指标或根因。已完成动作、业务价值和当前状态。
+第2项：对象与范围。关键事实、指标或根因。已完成动作、业务价值和当前状态。
 
-## Weekly Summary Template
+二、数据治理与运行保障
 
-```markdown
-# YYYY-Www 周报
+第1项：对象与范围。关键事实、指标或结论。已完成动作、业务价值和当前状态。
 
-第一项：主题标题
-本周推进内容。保留关键实例/库/表/SQL证据，说明当前处理状态或反馈结果。
+下周重点工作
 
-第二项：主题标题
-本周推进内容。保留关键实例/库/表/SQL证据，说明当前处理状态或反馈结果。
+第1项：具体目标、执行动作和预期交付。
+第2项：具体目标、执行动作和预期交付。
 ```
 
-## Next Week Plan Template
+强制要求：
 
-```markdown
-下周计划
+- 标题固定为纯文本 `YYYY-Www 周报`，不得加 Markdown `#`。
+- 不输出“本周工作概述”或任何概述段落，标题后直接进入“本周重点工作”。
+- 大类标题不加方括号、书名号、标签或其他装饰符号。
+- 每个大类内部都从 `第1项：` 重新编号；不得沿用前一大类的序号。
+- 五个固定大类始终显示；无事项的大类正文写“无”，有事项的大类按下列固定顺序显示。
+- 本周事项通常展示 3–6 项，以真实事项为准，不为凑数编造。
+- 正式输出是保存文件的原文，不得再生成第二版摘要或聊天版改写。
 
-第一项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
+## 五个固定大类
 
-第二项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
+1. `一、性能优化与问题处置`
+   - 慢 SQL、执行计划、索引、锁等待、长事务、性能风险、数据库故障和异常处置。
+2. `二、数据治理与运行保障`
+   - 数据归档与清理评估、同步、备份恢复、权限安全、数据正确性、迁移与变更保障。
+3. `三、监控巡检与平台建设`
+   - 监控告警、巡检、采集链路、可观测平台、监控组件和平台能力建设。
+4. `四、资源容量与成本优化`
+   - 容量趋势、扩缩容、资源回收、云资源费用、账单核对和降本增效。
+5. `五、其他重点事项`
+   - 仅收纳领导明确交办或关注、关键跨部门事项、审计或制度类工作，且确实无法归入前四类的事项。
 
-第三项：计划标题
-继续推进事项，写清目标、范围和需要验证/跟进的结果。
+分类看主目标，不看使用了什么工具，也不得让模型生成的脏 `category` 或 `weekly_group` 覆盖明确的事项实质。例如：即使 `category=inspection`，主目标是定位慢 SQL 时仍属于“性能优化与问题处置”；使用监控平台定位慢 SQL 也属于该类，只有主目标是调整监控采集链路时才属于“监控巡检与平台建设”。“其他重点事项”不是兜底分类，skill 维护、个人学习、个人知识库、例行工具批次和普通自动化运行不得进入周报。
+
+## 单项细节契约
+
+每项优先写成 2–3 个短句，通常 120–260 个中文字符；字符数只是参考，校验以信息是否完整为准。必须尽量保留证据中已有的以下内容：
+
+1. 明确对象和工作范围：实例、库表、服务、平台、账号、资源范围或具体交付物。
+2. 1–3 个最有管理价值的事实：规模、耗时、扫描行数、执行次数、风险等级、费用方向、权限变化、时间窗口或其他可核查结论。
+3. 根因或分析结论：已知时写具体结论；未知时如实写当前定位范围，不得编造。
+4. 已完成的处理动作或交付物：分析、调整、验证、报告、方案、清单或已完成的交接。
+5. 价值和当前状态：稳定性、数据正确性、风险或成本影响，以及已完成、已反馈、等待复核、分析完成尚未执行等状态。
+
+环境切换、参数确认和证据收集只能作为主事项中的辅助动作，不能单独占一项。原始命令、本地路径、端口和完整 SQL 不进入领导版；SQL 的对象、核心条件、规模、关键指标、根因和处理结论必须保留。
+
+同一 `object_key + objective` 跨日出现时，聚合器必须合并全部 `evidence_refs`、`key_facts` 和 `supporting_actions`，保留已有事实口径，并以最新一天的状态、结果和明确后续动作收尾；不得用后一日的一句短状态覆盖前期指标、根因或交付细节。
+
+以下空泛表达不能单独通过周报门禁：
+
+- “完成数据库优化。”
+- “处理慢 SQL，后续继续观察。”
+- “完成监控问题排查。”
+
+## 大类内排序
+
+每个大类内按管理优先级排序：
+
+1. 领导明确关注、交办或需要决策。
+2. 涉及金额、费用、预算或明确降本收益。
+3. 涉及权限、安全、审计或合规。
+4. 影响生产稳定、数据正确性或被标记为高风险。
+5. 存在跨团队阻塞、明确期限或待协调事项。
+6. 常规优化和例行建设。
+
+同一优先级再按影响范围、紧迫程度和当前状态排序。不得仅按日期、生成顺序或工具名称排序。
+
+## 下周重点工作
+
+- 只能来自 WorkItem 中明确、非空的 `follow_up`，或有来源引用的用户显式周报修订。
+- 去重后最多 3 项；没有明确计划时不编造。
+- 每项写清具体目标、执行动作、验证方式或预期交付，不能只写“继续跟进”“持续优化”。
+- 下周计划单独从 `第1项：` 顺序编号。
+
+## 用户修订与原样输出
+
+用户要求增加、删除、替换、移动分类或补充细节时，先把增量修订保存为 skill 外部的周级侧车文件：
+
+```bash
+python3 scripts/reportctl.py weekly-revise \
+  --date YYYY-MM-DD \
+  --revision /absolute/path/weekly-revision.json \
+  --profile /absolute/path/report-profile.local.json
 ```
 
-## Reference Style
+修订必须标记 `source_kind=explicit_user_revision`，每个事项和计划必须带 `source_ref`。不属于本周每日 Evidence 的纠偏来源还必须放入顶层 `sources`，每条包含 `id/thread_id/turn_id/occurred_at/user_text`；`source_ref` 必须指向每日 Evidence 或该审计来源。来源落盘前会脱敏 webhook、Authorization、Cookie、密码和 Token。
 
-Use this tone for weekly summaries:
+把事项从一个对象替换成另一个对象时，无论对象使用点号、连字符、下划线、普通服务名还是中文表/库/实例/服务名，都必须引用顶层 `sources` 中明确说明对象更正的用户纠偏来源；普通每日 Evidence 不能授权跨对象替换。通过校验后保留原对象、新对象和 `source_ref` 的审计记录。
 
-- `第一项：慢SQL与告警处理`
-- `本周处理了多项数据库慢SQL和告警问题。rds-PGSQL-health库中，doctor_center.pc_patient_doctor_rel表因缺少合适索引触发报警，已完成对应SQL工单处理。`
+`weekly-revise` 按增量合并：新修订不会覆盖旧修订；省略 `plans` 表示保留已有计划，显式传入空数组才表示清空。后续可以继续替换或恢复曾删除的事项。重新聚合时始终应用累计侧车，因此同一输入重复运行不会丢失用户已经确认的金额、权限、对象、指标、细节和计划。只修改用户指定的事项，其余事项保持不变。
 
-Use this tone for next-week plans:
+用户说“输出周报”时，生成或聚合完成后执行：
 
-- `第一项：继续完善DBC巡检系统，重点推进Oracle AWR自动巡检、每日巡检任务和巡检结果汇总能力。`
-- `第二项：跟进rds-PGSQL-health、ehp、rds-campus等慢SQL反馈结果，推动开发侧完成SQL或索引优化。`
+```bash
+python3 scripts/reportctl.py show \
+  --type weekly \
+  --date YYYY-MM-DD \
+  --profile /absolute/path/report-profile.local.json
+```
+
+最终答复只返回该命令的标准输出，不加前言、文件路径、解释、第二份摘要或后记，确保聊天输出和已校验保存稿逐字一致。
+
+## 保存与门禁
+
+- 输出单周稿 `codex-weekly-submit-YYYY-Www.md`，并更新兼容月度周报根文件 `codex-weekly-submit-YYYY-MM.md`。
+- 聚合前重新校验每日 Evidence/WorkItem；渲染后校验标题、大类顺序、分组编号、事项细节、计划数量和非法字符。
+- 事项和计划必须各占一行；不得用换行注入大类或“下周重点工作”段落。
+- 提交到表单前清理 `<`、`>`、`!`、反引号和中英文方括号；比较条件改写为“低于、不高于、不低于、超过”。
+- 任一校验失败均禁止写正式周报和 run-state。
+- 跨月 ISO 周统一保存到该周周日所在月份，确保用周内任意日期聚合、修订或输出时都命中同一份文件。
+- 周报只保存，不发送企业微信。

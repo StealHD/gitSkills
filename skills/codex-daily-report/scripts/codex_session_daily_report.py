@@ -236,7 +236,6 @@ def scan_file(path: Path, start: datetime, end: datetime, tz: ZoneInfo, titles: 
             thread_id = meta.get("id") or thread_id
             report.thread_id = thread_id
             report.cwd = meta.get("cwd") or report.cwd
-            report.title = titles.get(thread_id, report.title)
             continue
 
         event_type = payload.get("type") if item.get("type") == "event_msg" else None
@@ -288,7 +287,15 @@ def scan_file(path: Path, start: datetime, end: datetime, tz: ZoneInfo, titles: 
 
     if not has_events_in_day:
         return None
-    report.title = report.title or titles.get(report.thread_id, "") or short_text(report.turns[0].user_message if report.turns else "")
+    observed_title = next(
+        (
+            turn.user_message
+            for turn in report.turns
+            if turn.user_message_kind == "user" and turn.user_message.strip()
+        ),
+        "",
+    )
+    report.title = short_text(observed_title) or titles.get(report.thread_id, "") or report.title
     return report
 
 

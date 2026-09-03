@@ -22,6 +22,10 @@ sync_exclude_globs = [
   "**/*.local.*",
   "*.local.json",
   "**/*.local.json",
+  "__pycache__/*",
+  "**/__pycache__/*",
+  "*.pyc",
+  "**/*.pyc",
 ]
 forbidden_package_globs = [
   ".DS_Store",
@@ -35,7 +39,11 @@ forbidden_package_globs = [
   "*.skill-test.md",
   "regression_*.py",
   "**/regression_*.py",
-  "*-report-*.md",
+  "codex-session-report-*.md",
+  "codex-daily-submit-*.md",
+  "codex-weekly-submit-*.md",
+  "codex-weekly-plan-*.md",
+  "codex-monthly-submit-*.md",
   "__pycache__/*",
   "**/__pycache__/*",
   "*.pyc",
@@ -55,8 +63,8 @@ forbidden_init_patterns = [
 [skills."notion-task-manager"]
 path = "skills/notion-task-manager"
 maintenance_path = "/Users/stealmac/.codex/skills/notion-task-manager"
-version = "0.1.1"
-status = "published"
+version = "0.3.0"
+status = "local"
 public = true
 package_formats = [
   "tar.gz",
@@ -75,8 +83,8 @@ package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "codex-daily-report/v0.1.1"
-notes = "Packaging-only release adding a zip artifact. Release control must not edit the skill files."
+release_tag = "codex-daily-report/v0.3.0"
+notes = "Unreleased local-maintenance sync adding the unified evidence and WorkItem pipeline, guarded report finalization, aggregation, and performance reporting."
 
 [skills."dbc-skill"]
 path = "skills/dbc-skill"
