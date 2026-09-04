@@ -1,277 +1,227 @@
 ---
 name: book-skill
-description: Use when a user asks Codex to find ebook source pages, compare book versions or formats, return Anna's Archive results by default, provide a clickable direct-download list, or download a selected ebook entry through Chrome while prioritizing EPUB/MOBI and handling multiple editions.
+description: Use when a user asks Codex to find one or multiple ebooks, compare editions or formats, return Anna's Archive metadata and clickable final download URLs by default, or download a user-selected entry through Chrome.
 ---
 
 # Book Skill
 
-## Overview
+## Core Contract
 
-Find the best matching book records and ebook source pages. Default to a verified Anna's
-Archive source host for ebook record discovery, with EPUB/MOBI preferred when identity and
-source status are suitable.
+A bare book title is a request for a complete result, not metadata-only lookup. By default, return
+the best matching Anna's Archive record, useful bibliographic/file information, and a clickable
+final download URL without clicking it.
 
+For every requested book:
 
-## Workflow
+- Prefer the requested language; otherwise infer language from the title and surrounding request.
+  Do not silently turn a Chinese-title request into English originals.
+- Return the best strong EPUB record and the best strong MOBI/AZW record when both are available;
+  otherwise return the best available format. Limit the default to two result rows per book.
+- Retain title/edition, author, publisher/year, language, format/size, final download action,
+  download entry page, Anna record page, route, and verification status for every selected result.
+  Present them in one compact Markdown table: one selected format per row, with bibliographic
+  details, file information, and all three actions on that same row.
+- Put one recommended action first for each book. Keep an alternate strong format in the immediately
+  following row, so a choice never requires cross-referencing a summary with a separate link table.
+- On normal success, the clickable download action already communicates verification. Hide source
+  host, route, and repeated success labels unless the user asks for diagnostics or a route has a
+  meaningful wait/problem state.
+- A download URL must be the visible final `立即下载` action. An entry page or record page is not a
+  direct download URL.
+- Do not click the final action until the user selects a result and asks for the actual download.
 
-1. Parse the request for title, author, language, edition, year, publisher, ISBN, and desired format. Ask a short clarification only when two or more different books are plausible.
-2. Search exact identifiers first: ISBN, exact title plus author, then title plus language/edition. For ebook/source-page requests, select `anna_base_url` using the source-domain routine below and check `<anna_base_url>/search?q=<url-encoded-query>` by default. Skip Anna only when the user explicitly says not to use Anna or asks for non-Anna-only sources.
-3. Also search source pages when relevant: publisher/author pages, Project Gutenberg, Standard Ebooks, Internet Archive pages, Open Library, national/library catalogs, and retailer preview pages. Treat these as supplemental unless the user explicitly excludes Anna or asks for non-Anna-only sources.
-4. Extract candidate facts: title, author, translator/editor, language, year, publisher, edition, ISBN, format, size/page count, source name, record URL, source status, and confidence reason.
-5. Filter obvious mismatches before ranking: wrong title, wrong author, wrong language, unrelated edition, incomplete metadata, or suspicious URL. If no candidate remains after filtering, say no matching record was found; do not fill the result with title-near, author-related, or topic-related books.
+Open extra editions only when the user asks to compare versions or when a default candidate fails.
+Do not use another book source when Anna is unavailable unless the user explicitly requests
+non-Anna-only results.
 
-## Anna's Archive Source-Domain Routine
+## Execution State Machine
 
-Use one task-wide `anna_base_url` instead of hardcoding Anna's Archive domains in multiple
-places. Keep this list as the single maintenance point for current source hosts.
+Use one task-wide state and move forward without restarting completed stages:
 
-Current primary candidates:
-
-| Priority | Candidate host |
-| --- | --- |
-| 1 | `https://zh.annas-archive.pk` |
-| 2 | `https://zh.annas-archive.gd` |
-| 3 | `https://zh.annas-archive.gl` |
-| 4 | `https://annas-archive.pk` |
-| 5 | `https://annas-archive.gd` |
-| 6 | `https://annas-archive.gl` |
-
-Before the first Anna search in a task:
-
-1. If the user provides an Anna's Archive URL, test that host first. Use it only when the page
-   loads and identifies as Anna's Archive; otherwise fall back to the candidate list.
-2. Probe candidates lightly in order with `/` or `/search?q=<url-encoded-title>`. Choose the first
-   host that loads successfully and shows the expected Anna's Archive page, not a parking,
-   challenge-only, scam, or unrelated page.
-3. Preserve the chosen host for all search pages, `/md5/<hash>` record pages, relative download
-   URLs, and entry-page normalization in the same task.
-4. If the chosen host stops loading, redirects unexpectedly, shows the wrong site identity, all
-   candidates fail, or the user says the Anna URL changed, repeat the discovery process: check
-   current public signals from `r/Annas_Archive`, the Anna's Archive Wikipedia page, and
-   SLUM/Open-SLUM uptime data. Add a newly observed host only after it also passes a live page
-   check.
-5. Do not prefer `annas-archive.io`, `annas-archive.is`, `annas-archive.li`, `annas-archive.se`,
-   or other lookalike domains unless a current trusted public signal lists them and the page
-   identity check passes.
-
-## Anna's Archive Record-Page Routine
-
-Use this routine by default for ebook/source-page requests, when the user provides an Anna's
-Archive URL, says to use their link, or explicitly asks for Anna's Archive results.
-
-1. Select `anna_base_url` with the source-domain routine, then search the user query:
-   - `<anna_base_url>/search?q=<url-encoded-query>`
-   - `<anna_base_url>/search?q=<url-encoded-query>&ext=epub`
-   - `<anna_base_url>/search?q=<url-encoded-query>&ext=mobi`
-2. Open or fetch pages normally. If the site returns a CAPTCHA, anti-bot challenge, login wall, or blocking page, mark the result as `受阻`.
-3. Extract only search-result metadata and record pages:
-   - record URL: `/md5/<32-hex-hash>`
-   - title anchor text
-   - author line
-   - publisher/year line
-   - language, format, file size, year, and source-path metadata
-   - visible source path, when present, to confirm file extension such as `.epub`, `.mobi`, `.azw3`, or `.pdf`
-4. Normalize record URLs to `<anna_base_url>/md5/<hash>`. For download-entry handling, follow the Download Entry Handling section.
-5. Verify recommended record pages by opening them or checking HTTP 200 when tools allow it. Say "unverified" for any record page that was not checked.
-6. De-duplicate near-identical results by title, author, publisher/year, and format. Prefer one representative per edition and format.
-
-For title filtering, keep exact or near-exact works first. Exclude obvious related works, commentary, biographies, collections, study guides, sequels, or author letters unless the user asks for them. For example, a search for `小王子` should prefer original-work records titled `小王子`, `小王子(65周年纪念版)`, or bilingual editions, and should normally exclude titles such as `小王子的情书集`, `小王子的领悟`, `小王子三部曲`, `小王子的星辰与玫瑰`, and `空军飞行员(成为小王子之路)`.
-
-If no exact or strong same-book candidate exists, return a clear `未找到匹配记录` result. Do not add a `备选版本` table containing different books merely because they share a word in the title, the same author, or a related topic.
-
-## Download Entry Handling
-
-When download entries are requested, return at most one link in each bucket:
-
-1. `稍快但需排队`: prefer the first visible low-speed partner entry labeled "稍快但需要排队" or equivalent. Use its normal page URL, not a hidden direct file URL.
-2. `无需排队`: prefer the first visible low-speed partner entry labeled "无需排队" or equivalent. Use its normal page URL, not a hidden direct file URL.
-
-These are intermediate entry pages. Do not put an entry-page URL in the `下载` column of a
-download list. The `下载` column must point to the final visible action URL from the entry page.
-Clicking a `下载` hyperlink must directly enter the browser download/save flow or a file response;
-if the click only opens another page that still requires a second click, it is still an `入口页`,
-not a `下载` link.
-
-On Anna record pages, parse the downloads panel rather than guessing:
-
-1. Scope extraction to `#md5-panel-downloads` when present.
-2. For `稍快但需排队`, find the first list item whose visible text contains `稍快但需要排队`; return the immediately preceding server hyperlink in the same list item, such as the `低速服务器（合作方提供） #...` anchor.
-3. For `无需排队`, find the first list item whose visible text contains `无需排队`; return the immediately preceding server hyperlink in the same list item.
-4. Normalize relative URLs against `<anna_base_url>/`.
-5. Ignore viewer links, filename links, hidden direct-file URLs, scripts, and links outside the matching list item.
-
-## Download List, Verification, and User Choice
-
-When the user asks to download, do not silently choose an entry. Verify both returned download
-entries first, then ask the user which one to use. Prefer `@chrome`/the Chrome plugin for this
-step when available, because it can use the user's real Chrome profile, cookies, and browser state.
-
-1. When the user asks for a clickable download list, build a `下载列表` table from the best 3-7
-   candidate versions. Include enough selection facts in each row: title/edition, author,
-   publisher/year, language, format, size, source status, final download action, entry page, and
-   record page. If there are no same-book candidates, return one `未找到` row and do not add
-   unrelated candidates.
-2. For each listed candidate, prefer EPUB/MOBI/AZW and use `@chrome` to open the preferred entry page
-   and extract the visible final action link whose label contains `立即下载` (for example
-   `📚立即下载`). Do not click it while preparing the list; put that final href behind a short
-   Markdown link label such as `[下载](...)`.
-3. The `[下载]` link must be the final `立即下载` action URL that starts a browser download when
-   clicked. Never use a `/slow_download/...`, `/fast_download/...`, record page, viewer link, or
-   entry page as the `[下载]` target.
-4. Treat "direct download" operationally: clicking `[下载]` should not require the user to land on
-   another web page and click again. If the extracted URL cannot be tied to the visible `立即下载`
-   action, do not output it as `[下载]`.
-5. Also keep `[入口页](...)` and `[记录页](...)` links in the row. Direct download action links may
-   expire, so if `[下载]` fails, the entry page should still let the user retry manually.
-6. If a final `立即下载` URL cannot be resolved for a candidate after Chrome/browser verification,
-   put `未解析` in the `下载` column and explain the blocker in `状态`. Do not put `需打开入口页` or
-   the entry-page link in the `下载` column.
-7. Visit the `稍快但需排队` and `无需排队` entry URLs with `@chrome` when available before returning
-   entry-level results.
-8. If ordinary HTTP returns a JavaScript browser check, DDoS-Guard page, CAPTCHA, login wall, or
-   anti-bot page, treat that as an automation-only signal and retry with `@chrome` when available.
-   Do not treat a challenge page as a working download page.
-9. If `@chrome` reaches the partner download page and a visible final action such as `立即下载`
-   appears, classify the entry page as `可访问`; classify the `下载` column as `直链已解析` only
-   when the final action href has been extracted into `[下载]`. Do not click the final download
-   action until the user chooses an entry or explicitly asks to download.
-10. Classify each entry as one of: `直链已解析`, `可访问`, `需等待`, `自动化需浏览器验证`, `自动化受阻/可手动打开`,
-   `受阻`, or `未测试`. Use `自动化受阻/可手动打开` when Codex tools hit a challenge page but the
-   URL itself should still be returned for the user to open in their own browser.
-11. Put both entries in the `下载入口` table with clickable labels, access status, the exact blocker
-   seen by Codex tools, the Chrome result when tested, and the next action. Return the entry page
-   links for user choice. Do not expose long temporary final-file URLs unless the user explicitly
-   asks for copyable direct links; clickable `[下载]` labels are allowed when the user asks for a
-   direct-download list.
-12. After the user chooses an entry, use `@chrome` for the final file download when available.
-   Download only the chosen entry. On the selected entry page, find the visible final action whose
-   label contains `立即下载` (for example `📚立即下载`), click it, and wait for Chrome's download
-   event or browser download completion signal when available.
-13. Do not rely only on the Chrome plugin's `download` event: some normal Chrome downloads may save
-   successfully without an event being exposed. After clicking `立即下载`, also check the user's
-   Downloads directory for a recent file or `.crdownload` matching the title, extension, hash, or
-   final-link filename.
-14. Verify the saved response is a file rather than an HTML challenge page by checking the final URL,
-   content type, filename or extension, and non-empty size. If Chrome starts the download but the
-   tool cannot read the saved path, report `浏览器已开始下载` and keep the entry page available.
-15. Do not click `立即下载` on both entries. Use the second entry only if the user chooses it or if the
-   selected entry fails and the user asks to try the other one.
-
-## Ranking
-
-Rank candidates by this order:
-
-1. Access clarity and source status.
-2. Exact ISBN match, then exact title plus author, then strong title/edition match.
-3. Format priority: EPUB and MOBI/AZW first. If the user names one of them, put that format first; otherwise show both when available. If neither exists, keep the best other formats such as PDF, TXT, HTML, CBZ, or scanned page images.
-4. Source quality: official publisher/author, recognized public-domain project, library/lending page, stable catalog page, then other public record pages.
-5. URL viability: page loads successfully and access status is clear.
-6. Metadata completeness: edition, language, file size/page count, publication year, and source provenance.
-
-## Multiple Versions
-
-When multiple plausible versions remain, do not silently pick one unless a single candidate is clearly dominant. Present 3-7 choices and ask the user to choose.
-
-Use a compact table. Render long URLs as Markdown links with short labels, not as bare URLs.
-
-| Option | Match | Format | Source | Why choose it |
-| --- | --- | --- | --- | --- |
-| 1 | Title, author, edition/language | EPUB | [source](<URL>) | Exact ISBN, clear source metadata |
-| 2 | Title, author, alternate edition | MOBI | [source](<URL>) | Same work, different edition |
-| 3 | Title, author | PDF | [catalog](<URL>) | No EPUB/MOBI found |
-
-If one candidate is best, return it first, then list important alternates.
-
-## URL Viability Checks
-
-Before recommending a URL, open or fetch the page when tools allow it. Confirm:
-
-- HTTP/page load succeeds.
-- The page is the expected book or edition.
-- Access status is clear.
-- The URL is canonical or stable enough to reuse.
-
-Do not repeatedly hit the same host or scrape aggressively. If viability cannot be checked, say that it is unverified.
-
-## Fixed Output Format
-
-Always use this shape for Anna's Archive results:
-Actual user-facing output must be rendered Markdown, not a fenced code block, so hyperlink labels
-are clickable and open the target page.
-
-```md
-推荐：<title>（<format>）
-
-| 字段 | 信息 |
-| --- | --- |
-| Anna 源站 | <selected host + verified/unverified> |
-| 记录页 | [打开记录页](<record page URL>) |
-| 作者 | <author> |
-| 语言 | <language> |
-| 出版/年份 | <publisher/year> |
-| 格式/大小 | <format/size> |
-| 匹配原因 | <title/author/edition/format/source-quality reason> |
-| 页面验证 | <HTTP 200 / 未验证 / 受阻> |
-
-下载列表（点击 `[下载]` 可直接下载；直链可能有时效）：
-
-| 选项 | 版本 | 作者 | 出版/年份 | 语言 | 格式/大小 | 下载 | 入口页 | 记录页 | 状态 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final `立即下载` action URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <直链已解析/需等待/自动化受阻/未测试 + note> |
-| 2 | <title/edition> | <author> | <publisher/year> | <language> | <EPUB/MOBI/etc + size> | [下载](<final `立即下载` action URL>) / 未解析 | [入口页](<download-entry URL>) | [记录页](<record page URL>) | <why/status> |
-
-下载入口（当只比较同一记录页的两个入口时使用）：
-
-| 类型 | 入口页 | Chrome 验证 | 下一步 |
-| --- | --- | --- | --- |
-| 稍快但需排队 | [低速服务器 #N](<download-entry URL>) / 未返回 | 状态：<可访问/需等待/自动化需浏览器验证/自动化受阻/可手动打开/受阻/未测试>；页面：<看到 `立即下载` / blocker / wait note> | <请用户选择 / 已选择则点击 `立即下载` / open manually / wait note> |
-| 无需排队 | [低速服务器 #N](<download-entry URL>) / 未返回 | 状态：<可访问/需等待/自动化需浏览器验证/自动化受阻/可手动打开/受阻/未测试>；页面：<看到 `立即下载` / blocker / wait note> | <请用户选择 / 已选择则点击 `立即下载` / open manually / wait note> |
-
-下载结果（仅在用户选择入口并要求下载后显示）：
-
-| 字段 | 信息 |
-| --- | --- |
-| 选择入口 | <稍快但需排队/无需排队> |
-| 最终动作 | <已点击 `立即下载` / 未点击> |
-| 下载状态 | <已保存/浏览器已开始下载/需等待/自动化需浏览器验证/自动化受阻/可手动打开/受阻> |
-| 文件 | <local saved path or 未保存> |
-| 校验 | <content type / extension / size / recent Downloads match> |
-
-备选版本（仅当存在同一本书的其他版本时显示）：
-
-| 选项 | 版本 | 格式 | 链接 | 说明 |
-| --- | --- | --- | --- | --- |
-| 1 | <title, author, edition/language> | <EPUB/MOBI/etc> | [记录页](<record page URL>) | <why> |
-
-备注：下载入口按统一配置处理。
+```text
+parse books
+  -> select Anna host
+  -> search each book
+  -> select/open best record(s)
+  -> resolve one final download URL per result
+  -> render results
+  -> click only after user selection
 ```
 
-Put details in tables whenever possible. Keep visible link text human-readable: use Markdown
-hyperlinks such as `[打开记录页](...)`, `[低速服务器 #1](...)`, and `[记录页](...)` instead
-of showing long raw URLs. Show raw URLs only when the user explicitly asks to copy URLs.
+The default intent is `complete_links`, including when the user supplies only book titles.
 
-Only include `备选版本` when the rows are plausible versions of the same requested book. Omit it
-entirely when no exact or strong same-book match was found.
+- `complete_links`: default; return metadata, record/entry links, and final download URLs.
+- `compare`: explicitly requested; add useful alternate editions after default results.
+- `download_selected`: click only the result/route the user selects.
+- `record_only`: use only when the user explicitly says not to resolve download links.
+- `non_anna`: use only when the user explicitly excludes Anna or requests other sources.
 
-For ambiguous results, keep the same shape and put `需要选择版本` in `推荐：`:
+## Parse One or Multiple Books
 
-```md
-推荐：需要选择版本
+Create an ordered `requested_books` list. Capture title, author, language, edition, year, publisher,
+ISBN, and requested format for each book when supplied.
 
-<table>
+- Treat line breaks, commas, semicolons, `、`, slashes, quoted-title boundaries, and connectors such
+  as `和`, `与`, `及`, and `&` as likely separators.
+- Whitespace separates titles only when both sides are independently identifiable books; never
+  split a normal multiword title mechanically.
+- `动物农场 1984` and `动物农场和1984` both mean two books.
+- Normalize an obvious connector typo such as `动物农场合1984` only when both sides are strong book
+  titles. Confirm the parsed list compactly instead of asking an unnecessary question.
+- Preserve input order. Assign book keys `A`, `B`, `C`, then result keys `A1`, `A2`, `B1`, `B2`.
 
-请回复选项编号。
-```
+Ask one short clarification only when title boundaries or book identity genuinely cannot be
+resolved.
 
-## Common Mistakes
+## Select the Anna Host
 
-- Do not treat "EPUB" or "MOBI" as enough reason to recommend a link; identity match comes first.
-- Do not choose by file size alone. Large scans may be worse than a smaller verified EPUB.
-- Do not return every duplicate. Group duplicates by edition/source and show the best representative.
-- Do not force-fill results with unrelated books. If there is no strong same-book match, write
-  `未找到匹配记录` instead of listing title-near, author-related, or topic-related records.
-- Do not put entry-page URLs in the `下载` column. `下载` means the final visible `立即下载`
-  action URL; entry pages belong only in the `入口页` column.
-- Do not label a link as `[下载]` if clicking it only opens another page. A valid `[下载]` link must
-  be the click target that directly starts the browser download/save flow or file response.
-- Do not expose private URLs, tokens, cookies, local paths, or session-specific redirect URLs.
+Read [references/browser-stability.md](references/browser-stability.md) before host discovery or
+whenever Anna access is protected, redirected, timed out, disconnected, or unavailable.
+
+Distinguish browser-provider availability from the desktop browser itself. If a `chrome` browser
+provider reports unavailable, launch Google Chrome when it is closed or focus/attach to it when it
+is already running, then continue the current Anna task through its address bar or Google. Do not
+ask the user to open Chrome, classify the Anna host as failed, pause for an explanation, or jump to
+terminal browser automation before this bounded native-Chrome recovery.
+
+Use a search-first check: a real exact-title search that displays Anna identity both validates the
+host and completes the first search. Do not open the homepage first unless identity, redirect, or
+challenge classification requires it.
+
+Once a host works:
+
+- Store it as `anna_base_url` and reuse one active search tab for the whole task.
+- Reuse the successful first search instead of requesting it again.
+- Normalize Anna-relative `/md5/` and entry paths against the current working host.
+- Keep task-local `tested_hosts` and `visited_urls`; do not revisit a canonical URL in the same
+  access mode unless the bounded recovery reference explicitly allows one retry.
+
+Only host/search-layer failure may rotate Anna domains or invoke Reddit/Wikipedia/SLUM discovery.
+Record-page or download-entry failure must stay local to that book/result.
+
+## Search and Select Records
+
+For each book in input order:
+
+1. Run one exact unfiltered search using ISBN when supplied, otherwise exact title plus author when
+   known, otherwise exact title.
+2. Extract only the best 3-5 candidate blocks from the loaded search page. Do not open every result
+   or enumerate the full page.
+3. If the page has no suitable preferred format, run at most one additional format-filtered search:
+   the user's explicit format, otherwise EPUB first. Do not automatically issue separate base,
+   EPUB, and MOBI queries.
+4. Rank candidates before opening records. Open only the selected default record(s): at most one
+   strong EPUB and one strong MOBI/AZW result per book.
+5. If a selected record cannot be verified/extracted after one scoped retry, open one next-ranked
+   same-book candidate. Do not restart host discovery.
+
+Rank by:
+
+1. Exact ISBN; then exact title plus author; then strong same-work title/edition match.
+2. Requested/inferred language.
+3. Requested format; otherwise EPUB, then MOBI/AZW, then other usable formats.
+4. Clear Anna provenance, source-path metadata, and viable record page.
+5. Publisher/year/edition completeness and file size.
+
+Exclude commentary, biographies, collections, study guides, sequels, and title-near works unless
+the user requests them. A successfully loaded search with no strong same-book candidate is
+`未找到匹配记录`, not a service failure; continue the remaining books.
+
+When `compare` is explicit, add up to three useful alternate editions after the default rows. Do
+not expand alternates merely because they exist.
+
+## Resolve Download URLs
+
+Resolve one working final download URL for every default result row.
+
+1. On the selected `/md5/<hash>` record, scope extraction to `#md5-panel-downloads` when present.
+   For each route, find the first list item containing its visible label and take the immediately
+   preceding server hyperlink from that same item. Normalize relative URLs against `anna_base_url`;
+   ignore viewer, filename, script, and unrelated links.
+2. Prefer the first visible partner entry labeled `无需排队`. If it is absent or cannot yield a
+   final action after one scoped retry, try the first `稍快但需要排队` entry.
+3. Open entry pages sequentially in the same reusable browser tab. If ordinary access shows
+   DDoS-Guard, JavaScript check, CAPTCHA, login wall, or an anti-bot page, retry that entry once in
+   Chrome. Never bypass a CAPTCHA.
+4. Extract the href attached to the visible `立即下载` action. Do not click it while preparing
+   results.
+5. Return the successful route, its entry page, record page, and final action URL. If the user asks
+   for every route, resolve and show both entry types; otherwise stop after the first working route.
+
+Never use `/slow_download/...`, `/fast_download/...`, a viewer, filename link, record page, or entry
+page as the final `[下载]` target. A temporary final action URL may appear behind the short
+`[下载]` label, but never print it raw or expose cookies/tokens. Direct actions may expire, so keep
+the verified entry page beside the final download link.
+
+If both entry routes fail for a selected result, do not rotate Anna domains or search Reddit: the
+host/search layer is already healthy. Apply the terminal response below after the local entry
+budget is exhausted.
+
+## Failure Scope and Stop Rules
+
+Keep recovery local to the failing layer:
+
+| Failure | Recovery | Must not do |
+| --- | --- | --- |
+| Anna host/search unavailable | Bounded browser recovery, remaining Anna families, then mandatory public-signal gate | Search other book sources |
+| Search loaded with no match | Mark that book `未找到匹配记录` | Rotate hosts or call it a service error |
+| Record extraction failed | One scoped retry, then one next-ranked same-book record | Rediscover Anna domains |
+| Preferred download entry failed | One scoped retry, then the alternate entry | Rediscover Anna domains or Reddit |
+| Browser control disconnected | One lightweight reconnect and retry only the failed scoped action | Restart the entire task |
+| Chrome provider unavailable | Launch or focus the Chrome app and use its address bar/Google for the exact Anna target | Ask the user to open Chrome or treat Chrome/Anna as unavailable before trying the app |
+
+For host/search failure, the terminal response is forbidden until the reference's configured-host
+and Reddit-first public-signal recovery is complete. For record/download failure, exhaust only the
+local recovery shown above.
+
+When a service/access failure prevents the requested complete result, return exactly this sentence
+and nothing else:
+
+> Anna’s Archive 服务端当前有问题，暂时无法完成检索，请稍后再试。
+
+Do not append partial tables, manual search URLs, mirror lists, troubleshooting, or links from
+Faded Page, Project Gutenberg, Internet Archive, Open Library, retailers, or any other fallback
+book source. For a multi-book request, a service failure that leaves the batch incomplete uses the
+same single terminal sentence. Valid `未找到匹配记录` rows may coexist with successful books because
+they are search outcomes, not service failures.
+
+## Actual File Download
+
+After the user selects a result key such as `A1` and explicitly asks to download:
+
+1. Open its verified entry page in Chrome and find the visible `立即下载` action again; refresh an
+   expired action URL from the entry page rather than guessing it.
+2. Click only the selected action. Do not click both routes or multiple books unless explicitly
+   selected.
+3. Check Chrome's download signal and the user's Downloads directory for a recent matching file or
+   `.crdownload`.
+4. Verify a non-empty file, plausible extension/filename, and non-HTML response when observable.
+5. Report `已保存`, `浏览器已开始下载`, `需等待`, or the terminal service response as appropriate.
+
+## Output
+
+Read [references/output-formats.md](references/output-formats.md) before returning results.
+
+- Bare titles and ordinary book requests use the complete default format with metadata and final
+  download URLs.
+- Single-book and multi-book requests use the same answer-first compact table. Each result row puts
+  the recommendation before alternatives and keeps `[下载]`, `[记录]`, and `[刷新入口]` together.
+- `compare`, `record_only`, selected-download results, and explicitly non-Anna requests use only
+  their corresponding output modes.
+- Render Markdown directly with short clickable labels; show raw URLs only when explicitly asked.
+- Do not narrate successful host selection, page visits, route choice, or verification work. When
+  the user explicitly asks for a test/debug run, append at most one compact trace line containing
+  only exceptional transitions and whether a final action was clicked.
+
+## Invariants
+
+- Default title-only requests must not degrade to record links without final download URLs.
+- Default output must not require the user to join bibliographic facts and actions across rows or
+  multiple tables.
+- Prefer best-first local fallback over eager opening of every candidate or entry.
+- Keep completed book results and task state when moving to the next book.
+- Never fabricate an ISBN, record hash, entry link, or final action URL.
+- Never bypass CAPTCHA or mislabel a challenge page as a working download page.
+- A browser-provider error is not evidence that the desktop Chrome app or Anna host has failed;
+  proactively launch or focus Chrome once before escalating.
+- Never replace failed Anna access with a non-Anna book source unless explicitly requested.

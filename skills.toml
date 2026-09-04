@@ -125,15 +125,16 @@ notes = "Hardens schema-v3 path identity, compact WORKLOG validation, crash reco
 
 [skills."book-skill"]
 path = "skills/book-skill"
-version = "0.1.2"
-status = "published"
+maintenance_path = "/Users/stealmac/.codex/skills/book-skill"
+version = "0.2.3"
+status = "local"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "book-skill/v0.1.2"
-notes = "Patch release requiring click-to-download links in the download column and keeping Anna entry pages separate."
+release_tag = "book-skill/v0.2.3"
+notes = "Completes Chrome surface recovery by proactively launching or focusing the desktop app, sending one exact Anna or Google-limited navigation URL through the OS when needed, and reacquiring control before escalation."
 
 [skills."tmdb-movie-discovery"]
 path = "skills/tmdb-movie-discovery"
