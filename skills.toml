@@ -127,7 +127,7 @@ notes = "Hardens schema-v3 path identity, compact WORKLOG validation, crash reco
 path = "skills/book-skill"
 maintenance_path = "/Users/stealmac/.codex/skills/book-skill"
 version = "0.2.3"
-status = "local"
+status = "published"
 public = true
 package_formats = [
   "tar.gz",
