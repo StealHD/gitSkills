@@ -1,4 +1,4 @@
 interface:
   display_name: "Book Skill"
   short_description: "Find ebooks with concise direct-download choices"
-  default_prompt: "Use $book-skill to return concise, recommendation-first Anna's Archive results for one or multiple titles, including useful metadata, record and refresh-entry links, and verified final download URLs without clicking them."
+  default_prompt: "Use $book-skill to return concise, recommendation-first Anna's Archive results for one or multiple titles, including useful metadata, record and refresh-entry links, and resolved final download URLs without clicking them."

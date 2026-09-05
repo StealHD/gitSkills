@@ -1,120 +1,84 @@
 # Book Result Output Formats
 
-Render Markdown directly. Use short clickable labels instead of raw URLs unless the user explicitly
-asks to copy them. Optimize for the next decision the user needs to make, not for exposing the
-search process.
+Use short clickable labels and concise Chinese results. Link extraction is not a successful
+transfer/integrity test. Do not claim "verified downloadable" merely because a final action exists.
 
-The default for bare book titles remains a complete result: useful metadata, Anna record page,
-refreshable entry page, and final download URL. Progressive disclosure changes presentation only;
-it must never remove these links.
+## Search Results: Four Columns
 
-If the Book Skill's terminal service rule triggers, return its fixed sentence alone. Do not combine
-it with a partial result or diagnostics.
-
-## Presentation Rules
-
-- Start with the result; omit preambles such as `已按 skill 执行`.
-- Use one compact Markdown table in input order, with one selected format per row. Use exactly four
-  columns: `选择`、`书籍／版本`、`文件`、`操作`; use `<br>` inside the book cell for readable wrapping.
-- Repeat the canonical book title in every result row. Put author, translator, publisher/year, and
-  any useful edition distinction in that row's book cell, so it remains understandable on its own.
-- Put the recommended action first and mark it once with `推荐`. Keep at most one strong alternate
-  format immediately below the recommended row for that book.
-- Keep the final action, format/size, record page, and refresh entry together in the row's action
-  and file cells. Never split metadata and links into separate tables.
-- Omit a field rather than showing `—`. Shorten a marketing-heavy title to the canonical title plus
-  a useful edition label; the record link preserves full details.
-- Successful route and verification state are implicit in an active `[下载 …]` link. Show a state
-  only when it changes the user's action, such as `需等待`.
-- Do not show the working Anna host or recovery path unless the user asks for source/debug details.
-- End after the table. Do not append a selection prompt or explain how to select a row; the stable
-  keys and `[下载]` actions already make the next step clear.
-
-## Complete Default Result
-
-Use this for one or multiple books. Preserve input order and stable keys. A book may have one action,
-or two when strong EPUB and MOBI/AZW results both exist. Keep the table narrow and action-oriented.
+Use one table in input order for one or multiple books. One selected format per row; at most two
+default rows per book. Explicit formats override the default EPUB/MOBI choices.
 
 ```md
-已找到 <N> 本（<language preference>）。
+已找到 <N> 本。
 
 | 选择 | 书籍／版本 | 文件 | 操作 |
 | --- | --- | --- | --- |
-| A1 推荐 | 《<title A>》<useful edition label><br><author/translator>｜<publisher>·<year> | <language> · EPUB · <size> | [下载](<final `立即下载` action URL>) · [记录](<record URL>) · [刷新入口](<entry URL>) |
-| A2 | 《<title A>》<different edition fact when applicable><br><author/translator>｜<publisher>·<year> | <language> · MOBI · <size> | [下载](<final `立即下载` action URL>) · [记录](<record URL>) · [刷新入口](<entry URL>) |
-| B1 推荐 | 《<title B>》<useful edition label><br><author/translator>｜<publisher>·<year> | <language> · EPUB · <size> | [下载](<final `立即下载` action URL>) · [记录](<record URL>) · [刷新入口](<entry URL>) |
+| A1 推荐 | 《<title>》<edition><br><author/translator>｜<publisher>·<year> | <language> · <format> · <size> | [下载](<final action>) · [记录](<record>) · [刷新入口](<successful entry>) |
+| A2 | 《<title>》<alternate edition><br><author/translator>｜<publisher>·<year> | <language> · <format> · <size> | [下载](<final action>) · [记录](<record>) · [刷新入口](<successful entry>) |
 ```
 
-For a single book, use `已找到 1 本`. If a requested book has no strong match, keep its book key in
-the table and put `未找到匹配记录。` in its book cell; leave file and action cells blank. Never show
-`未解析` in a complete default result: if no final action can be resolved after the local route
-budget, apply the terminal service response.
+Repeat each title so rows stand alone. Omit unknown bibliographic fields rather than placeholders.
+Count matched books, not format rows. Put recommended choices first and alternate formats
+immediately below them. Never split metadata from actions into separate tables.
 
-The `[下载 …]` target must be the visible final `立即下载` action. `[刷新入口]` is the partner page
-used to refresh an expired action. `[记录]` is the normalized Anna `/md5/` page. Do not interchange
-these three link types.
+Every successful complete-links row retains all three links. Final download targets must be
+extracted visible final partner actions, not records/viewers/entry pages. Prefer HTTPS short
+filename when appropriate. Do not print raw signed URLs, cookies or standalone auth secrets.
 
-If the user explicitly asks to test or debug the skill, append one compact line after the result:
+For no eligible result, keep the book title and mark `未找到匹配记录` or `未找到指定格式`;
+leave unavailable action/file fields empty. For a failed resolution, preserve successful rows
+and mark the affected row with the actual concise failure class. Known record/entry links may
+remain, but never substitute them for a missing final download action.
+
+Do not narrate host selection, successful page visits or route traces. End after the table;
+no "回复 A1 即可" selection prompt. For explicit test/debug requests only, optionally append
+one line of exceptional transitions and whether a final action was clicked.
+
+## Other Search Modes
+
+- Compare: keep the same four-column layout, emphasize translator/publisher/edition differences,
+  and add at most three useful alternative editions after defaults. Each shown downloadable choice
+  gets its own resolved action; no related works just to fill rows.
+- Record-only: keep the layout with record links only, explicitly requested by the user.
+- Every route: expand only the selected result with waitlist then no-wait route/action/entry lines.
+  Show `需等待` only if relevant; do not claim an unresolved route has a final action.
+- Explicit non-Anna: use the same layout with source pages and actual availability. Never invent a
+  final URL from a catalogue. Anna access failure cannot trigger this mode.
+
+## Actual Downloads: Completion and Stop Point
+
+For one selected item, use one sentence with its real status and verified file link if available.
+For multiple selected items, use this three-column table, including completed, current and pending
+items in queue order:
 
 ```md
-测试：<only exceptional host/route transitions>；未点击下载。
+| 书籍 | 状态 | 文件 |
+| --- | --- | --- |
+| 《<completed title>》 | 已保存 | [文件](<verified actual local path>) |
+| 《<current title>》 | <actual failure/pause class>，已停止自动尝试 | |
+| 《<later title>》 | 未开始 | |
 ```
 
-Omit ordinary page visits, successful extraction steps, and repeated verification labels.
+Link verified completed files even when the batch stopped before final renaming, using their real
+original paths. Do not link partials or unverified files as completed books. If a Chrome transfer
+may still be running when monitoring stops, state `浏览器可能仍在下载，已暂停自动监控`.
+Keep the stop point explicit; a paused batch is not an entirely failed or entirely completed batch.
 
-## Compare Editions
+After all selected files verify and a requested archive verifies, link the archive once.
+If the archive alone satisfies the requested delivery, use one completion sentence with that link.
+Never label a subset as the complete collection or package it without an explicit partial-package
+request. Do not add a follow-up selection prompt.
 
-Use only when the user explicitly asks to compare versions or editions. A comparison table is useful
-here because the user needs side-by-side differences. Use one table, not separate metadata and
-download tables, and include only facts that distinguish choices.
+## Concise Failure Wording
 
-```md
-| 选择 | 版本差异 | 文件 | 操作 |
-| --- | --- | --- | --- |
-| A1 推荐 | <translator/publisher/year or other decisive facts> | <language · format · size> | [下载](<final action URL>) · [记录](<record URL>) · [刷新入口](<entry URL>) |
-| A2 | <different facts> | <language · format · size> | [下载](<final action URL>) · [记录](<record URL>) · [刷新入口](<entry URL>) |
-```
+Use evidence from the main skill's classification:
+- Confirmed server failure: `服务端当前有问题`, identifying a partner server when that is what failed.
+- Rate/concurrency limit: `下载限流`.
+- Browser control failure: `浏览器控制暂不可用`.
+- Challenge/login wall: `需要完成验证／登录`.
+- Deadline or uncertain cause: `等待超时` / `当前访问失败`.
+- Validation mismatch or insufficient evidence: `文件校验失败` / `完整性未确认`.
 
-Keep the default choices first, then add at most three useful same-work alternatives with keys such
-as `A3`, `A4`, and `A5`. Resolve a final download URL for every shown row. Do not add related books
-or duplicates to fill the table.
-
-## Show Every Download Route
-
-Default output shows only the first working route. If the user explicitly asks for every route,
-expand only the selected choice with compact route lines:
-
-```md
-A1-免排队 [下载](<final action URL>) · [刷新入口](<entry URL>)
-A1-排队 [下载](<final action URL>) · [刷新入口](<entry URL>) · <需等待, only when applicable>
-```
-
-## Record-Only Exception
-
-Use only when the user explicitly asks for metadata or record pages without download-link
-resolution. Use the same compact table, replacing the action cell with keyed `[记录]` links. Do not
-infer this mode from a bare title.
-
-## Actual Download Result
-
-After the user selects entries and asks Codex to click/download, report only selected items. For
-one item, prefer one sentence:
-
-```md
-A1《<title>》：<已保存/浏览器已开始下载/需等待>；<clickable local file or concise verification>。
-```
-
-Use a short bullet list only when several items were selected. Do not expose cookies, tokens,
-temporary signed URLs, or session-specific redirects.
-
-## Explicit Non-Anna Mode
-
-Use only when the user explicitly excludes Anna or requests non-Anna-only sources. Anna failure
-must never enter this mode automatically. Use the same four-column table with one compact row per source:
-
-```md
-| A1 | 《<title>》<br><source> | <language> · <format> | [来源页](<URL>) · <status only when attention is needed> |
-```
-
-Keep the same multi-book keys and input order. Do not invent a direct download URL from a catalog or
-preview page.
+With no results, use a short sentence identifying the failed stage and observed cause. With partial
+success, retain the table and put the cause at the affected item. Do not erase successes with a
+fixed error sentence or assert Anna is down based only on a control error.
