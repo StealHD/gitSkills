@@ -41,6 +41,35 @@ COMPLETED_STATUSES = {"resolved", "verified_normal", "analysis_complete", "hande
 OPEN_RECOMMENDATION_PATTERNS = [
     r"建议(?:改为|调整为|继续|后续|按|增加|减少)",
 ]
+LEADERSHIP_INTERNAL_STATUS_PATTERN = re.compile(
+    r"(?:当前)?状态(?:为|[:：])\s*(?:持续排查|持续跟进|进行中|处理中|待排查|待跟进|"
+    r"in_progress|blocked|analysis_complete|handed_off|resolved|verified_normal)|"
+    r"当前为\s*(?:方案)?(?:分析完成|进行中|处理中|待排查|待跟进)",
+    re.I,
+)
+LEADERSHIP_NEXT_STEP_PATTERN = re.compile(
+    r"下一步|后续(?:计划|将|需|继续)|待继续(?:排查|跟进|验证|确认)|"
+    r"待(?:授权|执行|验证|确认|处理|修复|上线|发布|协调)",
+    re.I,
+)
+LEADERSHIP_CONDITIONAL_FUTURE_PATTERN = re.compile(
+    r"(?:完成|补齐|授予|确认|修复)[^，。；]{0,40}后(?:即可|可|再|将)"
+    r"(?:重试|验证|执行|开展|恢复|推进|初始化)",
+    re.I,
+)
+LEADERSHIP_DISGUISED_FUTURE_PATTERN = re.compile(
+    r"(?:已)?(?:明确|确认)(?:需|将|应|优先)(?:处理|推进|优化|整改|治理|解决|修复|调整)",
+    re.I,
+)
+LEADERSHIP_OPEN_PROGRESS_PATTERN = re.compile(
+    r"(?:持续|继续)(?:推进|排查|跟进|处理)|"
+    r"(?:数据准备|协作支持|工作|事项|对接)[^。；]{0,16}(?:持续|继续)推进",
+    re.I,
+)
+LEADERSHIP_MISSING_EVIDENCE_PATTERN = re.compile(
+    r"当前(?:仍)?缺少[^。；]{0,80}(?:证据|映射|信息|数据)",
+    re.I,
+)
 REQUIRED_ITEM_FIELDS = {
     "id",
     "object_key",
@@ -112,6 +141,42 @@ MATERIAL_WEEKLY_CLAIM_RE = re.compile(
     r"%|TB|GB|MB|KB|核|台|个|条|批)",
     re.I,
 )
+
+
+def leadership_narrative_issues(text: str) -> list[tuple[str, str]]:
+    value = str(text or "").strip()
+    issues: list[tuple[str, str]] = []
+    if LEADERSHIP_INTERNAL_STATUS_PATTERN.search(value):
+        issues.append((
+            "internal_status",
+            "Leadership-facing text must report completed progress, not expose an internal status label.",
+        ))
+    if LEADERSHIP_NEXT_STEP_PATTERN.search(value):
+        issues.append((
+            "embedded_follow_up",
+            "Leadership-facing text must not embed next-step tasks; keep them in follow_up.",
+        ))
+    if LEADERSHIP_CONDITIONAL_FUTURE_PATTERN.search(value):
+        issues.append((
+            "conditional_future",
+            "Leadership-facing text must report delivered results, not conditional future actions.",
+        ))
+    if LEADERSHIP_DISGUISED_FUTURE_PATTERN.search(value):
+        issues.append((
+            "disguised_future",
+            "Leadership-facing text must state the finding, not disguise a future action as a result.",
+        ))
+    if LEADERSHIP_OPEN_PROGRESS_PATTERN.search(value):
+        issues.append((
+            "open_progress",
+            "Leadership-facing text must report a concrete milestone, not an open-ended process state.",
+        ))
+    if LEADERSHIP_MISSING_EVIDENCE_PATTERN.search(value):
+        issues.append((
+            "unframed_evidence_limit",
+            "Leadership-facing text must express missing evidence as a conclusion boundary.",
+        ))
+    return issues
 CLAIM_UNIT_FACT_NAME_RE: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
     (re.compile(r"(?:毫秒|ms|秒|s|分钟|小时|天)$", re.I), re.compile(r"latency|duration|elapsed|time|second|minute|hour|day", re.I)),
     (re.compile(r"(?:亿行|万行|行)$", re.I), re.compile(r"row|scan", re.I)),
@@ -137,7 +202,7 @@ GENERIC_OBJECT_PARTS = {
     "storage-capacity",
 }
 RESOLUTION_ACTION_RE = re.compile(
-    r"修复|恢复|解决|修正|移除|收敛|处理完成|执行完成|降至|恢复正常|完成变更"
+    r"修复|恢复|解决|修正|移除|收敛|处理完(?:成|了)|执行完成|降至|恢复正常|完成变更"
 )
 COMPLETION_ACTION_RE = re.compile(r"完成|已交付|已反馈|已验证|验证通过|一致|正常")
 NEGATION_PREFIX_RE = re.compile(r"(?:尚未|未|没有|并未|待|尚待|不可|无法)\s*(?:实施|执行|完成|进行)?\s*$")
@@ -593,6 +658,15 @@ def validate_bundles(
             errors.append(error("invalid_work_item", "Every work item must be an object."))
             continue
         item_id = str(item.get("id") or "")
+        if "daily_hidden" in item and not isinstance(item["daily_hidden"], bool):
+            errors.append(error("invalid_daily_hidden", "daily_hidden must be boolean", item_id))
+        if "daily_text" in item:
+            from copy import deepcopy
+            presentation = deepcopy(item)
+            presentation["submitted_text"] = presentation.pop("daily_text")
+            presentation_bundle = {"version": 1, "report_date": report_date, "items": [presentation]}
+            for finding in validate_bundles(report_type, report_date, evidence, presentation_bundle, profile):
+                errors.append({**finding, "field": "daily_text"})
         missing = sorted(REQUIRED_ITEM_FIELDS - set(item))
         if missing:
             errors.append(error("missing_work_item_fields", f"Missing fields: {', '.join(missing)}", item_id))
@@ -658,6 +732,9 @@ def validate_bundles(
                 item_id,
             ))
         submitted_text = str(item.get("submitted_text") or "").strip()
+        if report_type == "daily" and not is_legacy_submitted:
+            for issue, message in leadership_narrative_issues(submitted_text):
+                errors.append({**error("leadership_" + issue, message, item_id), "field": "submitted_text", "issue_type": issue, "repair_hint": "只修改本项表达：保留已完成动作和有证据的结论，将未来动作移入 follow_up。"})
         if not submitted_text:
             errors.append(error("empty_submitted_text", "submitted_text is required.", item_id))
         if "\n" in submitted_text or "\r" in submitted_text:
@@ -777,8 +854,20 @@ def validate_bundles(
         for ref in ref_set:
             if ref not in records_by_id:
                 errors.append(error("unknown_evidence_ref", f"Unknown evidence ref: {ref}", item_id))
-            elif records_by_id[ref].get("excluded_reason"):
+            elif records_by_id[ref].get("excluded_reason") and not (
+                records_by_id[ref].get("excluded_reason") == "associated_subtask"
+                and any(ref in records_by_id.get(parent, {}).get("associated_evidence_refs", []) for parent in ref_set)
+            ):
                 errors.append(error("excluded_evidence_ref", f"Excluded evidence cannot support a work item: {ref}", item_id))
+            if ref in records_by_id:
+                from .session_parser import is_guardian
+                record = records_by_id[ref]
+                if report_type != "existing" and (is_guardian(record.get("session_metadata") or {}) or str(record.get("user_text", "")).startswith("The following is the Codex agent history whose request action you are assessing.")):
+                    errors.append(error("internal_approval_evidence", "Approval reviews cannot support work items", item_id))
+        if any(records_by_id.get(ref, {}).get("excluded_reason") == "associated_subtask" for ref in ref_set) and not any(
+            ref in direct_object_refs and records_by_id[ref].get("excluded_reason") != "associated_subtask" for ref in ref_set
+        ):
+            errors.append(error("subtask_without_primary_object", "Associated work requires an object-grounded primary record", item_id))
         facts = declared_facts
         fact_names: set[str] = set()
         for fact in facts:
@@ -871,6 +960,11 @@ def validate_bundles(
 
     if report_type == "daily" and len(items) < 1:
         errors.append(error("daily_item_count", "A daily report requires at least one work item."))
+    if "display_order" in work_items:
+        order = work_items["display_order"]
+        ids = [item.get("id") for item in items if isinstance(item, dict)]
+        if not isinstance(order, list) or not all(isinstance(key, str) for key in order) or len(order) != len(set(order)) or not all(isinstance(key, str) for key in ids) or set(order) != set(ids):
+            errors.append(error("invalid_display_order", "display_order must contain every item id exactly once"))
     return errors
 
 
@@ -894,6 +988,8 @@ def validate_submitted_text(text: str, profile: dict[str, Any] | None = None, re
             errors.append(error("daily_item_count", "Submitted daily report must contain 1 to 4 numbered items."))
         for line in item_lines:
             body = line.split(". ", 1)[1]
+            for issue, message in leadership_narrative_issues(body):
+                errors.append({**error("leadership_" + issue, message), "item_id": line.split(".", 1)[0], "field": "submitted_text", "issue_type": issue, "repair_hint": "保留已有成果；将未来动作移入 follow_up。"})
             if len(body) > 220:
                 errors.append(error("submitted_text_too_long", "Each daily item must be at most 220 characters."))
     if report_type == "performance" and len(text) > 1000:

@@ -1,17 +1,10 @@
-# Daily Submission Contract
+# 日报提交格式
 
-日报 Markdown 只能由 `reportctl.py finalize --type daily` 渲染。
+日报由 `finalize/record/daily-revise` 的共享保存流程渲染，查看使用 `show --type daily`。
 
-- 展示 1–4 个真实 WorkItem，按输入顺序取最高价值事项；不得凑数。
-- 零个真实 WorkItem 时返回 `no_reportable_items`，不生成 Markdown；发送固定空日报通知，且不进入聚合报告。
-- 每行格式为 `序号. 对象 + 事项 + 关键事实 + 当前结果`。
-- 单项最多 220 个字符。
-- 保留定位故障或 SQL 所需的实例、库表、SQL_ID/代表性指标和状态。
-- `analysis_complete` 表示分析或方案边界完成，不表示已执行。
-- `verified_normal` 表示核查正常，不得渲染成故障修复。
-- 环境切换、配置确认、抓取证据等辅助动作不得单独编号。
-
-最终文件兼容：
-
-- `codex-daily-submit-YYYY-MM-DD.md`
-- `codex-daily-submit-YYYY-MM.md`
+- 展示 1–4 个真实事项；首次按价值排序，之后使用已保存的 display_order。全文数据保留所有有效事项。
+- 专项为空时选择 1–2 项有当天证据的日常 DBA 工作，不能用岗位职责模板凑数。具体范围、已执行动作和成果要求见字段契约。
+- 每行格式为 `序号. 对象 + 事项 + 关键事实 + 当前结果`，单项最多 220 字。定位所需对象和有价值指标应保留。
+- 表达统一遵循 [领导版表达](prompt.md)，事实及状态统一遵循 [字段契约](work-item-contract.md)。
+- 无可展示事项返回 no_reportable_items，不生成正文；通知规则见 [日常流程](daily-workflow.md)。因 presentation remove 隐藏的工作仍保留在周期汇总，真正空 items 不进入聚合。
+- 文件保持 `codex-daily-submit-YYYY-MM-DD.md` 和 `codex-daily-submit-YYYY-MM.md`。

@@ -16,6 +16,11 @@ EXPLICIT_SCOPE_OVERRIDE_RE = re.compile(
     r"^\s*(?:(?:请|麻烦)\s*)?(?:(?:今天)?(?:日报|周报)(?:范围|事项|中)?\s*[：:,，]?\s*)?"
     r"(今天只做了这个|只保留|不要这条|人工指定加入)"
 )
+EXPLICIT_RECORD_REQUEST_RE = re.compile(
+    r"^[ \t]*(?:(?:请|麻烦|帮我)[ \t]*)?(?:整理(?:后)?|补充)?"
+    r"(?:写入|记入|记录到|写到)(?:(?:今天|今日|当天)(?:的)?)?日报[。！! \t]*$",
+    re.MULTILINE,
+)
 CONTEXT_PRIORITY = {
     "scope_override": 0,
     "scope_selected": 0,
@@ -160,143 +165,16 @@ def new_turn(turn_id: str, occurred_at: datetime | None, cwd: str = "") -> dict[
 
 
 def scan_session_file(path: Path, start: datetime, end: datetime, timezone: ZoneInfo) -> list[dict[str, Any]]:
-    thread_id = path.stem.split("-")[-1]
-    cwd = ""
-    turns: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    current_turn_id = ""
-    call_to_turn: dict[str, str] = {}
-
-    def ensure_turn(turn_id: str, occurred_at: datetime | None) -> dict[str, Any]:
-        if turn_id not in turns:
-            turns[turn_id] = new_turn(turn_id, occurred_at, cwd)
-            order.append(turn_id)
-        return turns[turn_id]
-
-    def response_turn_id(payload: dict[str, Any]) -> str:
-        direct = payload.get("turn_id")
-        if direct:
-            return str(direct)
-        for key in ("internal_chat_message_metadata_passthrough", "metadata"):
-            metadata = payload.get(key)
-            if isinstance(metadata, dict) and metadata.get("turn_id"):
-                return str(metadata["turn_id"])
-        return ""
-
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-
-    for line_number, line in enumerate(lines, 1):
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        timestamp = parse_timestamp(item.get("timestamp"), timezone)
-        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-        item_type = item.get("type")
-
-        if item_type == "session_meta":
-            thread_id = str(payload.get("id") or thread_id)
-            cwd = str(payload.get("cwd") or cwd)
-            continue
-
-        event_type = payload.get("type") if item_type == "event_msg" else ("turn_context" if item_type == "turn_context" else "")
-        if event_type == "task_started":
-            turn_id = str(payload.get("turn_id") or f"turn-{line_number}")
-            occurred_at = event_time(payload, timestamp, timezone)
-            ensure_turn(turn_id, occurred_at)
-            current_turn_id = turn_id
-            continue
-
-        if event_type == "turn_context":
-            turn_id = str(payload.get("turn_id") or current_turn_id or f"turn-{line_number}")
-            turn = ensure_turn(turn_id, timestamp)
-            turn["cwd"] = str(payload.get("cwd") or turn.get("cwd") or cwd)
-            current_turn_id = turn_id
-            continue
-
-        if event_type == "user_message":
-            if not current_turn_id:
-                current_turn_id = f"turn-{line_number}"
-            turn = ensure_turn(current_turn_id, timestamp)
-            turn["occurred_at"] = turn["occurred_at"] or timestamp
-            message = str(payload.get("message") or "")
-            if message:
-                turn["user_text"] = "\n".join(part for part in (turn["user_text"], message) if part)
-            continue
-
-        if event_type == "task_complete":
-            turn_id = str(payload.get("turn_id") or current_turn_id or f"turn-{line_number}")
-            turn = ensure_turn(turn_id, timestamp)
-            turn["occurred_at"] = turn["occurred_at"] or timestamp
-            turn["result_text"] = str(payload.get("last_agent_message") or "")
-            current_turn_id = turn_id
-            continue
-
-        if item_type != "response_item":
-            continue
-        response_type = str(payload.get("type") or "")
-        call_id = str(payload.get("call_id") or payload.get("id") or "")
-        explicit_turn_id = response_turn_id(payload)
-        target_turn_id = explicit_turn_id or call_to_turn.get(call_id) or current_turn_id
-        if not target_turn_id:
-            continue
-        turn = ensure_turn(target_turn_id, timestamp)
-        is_call = response_type.endswith("_call") and not response_type.endswith("_call_output")
-        is_output = response_type.endswith("_output") and (
-            "call" in response_type or response_type in {"web_search_output", "tool_search_output", "image_generation_output"}
-        )
-        if is_call:
-            call_id = str(payload.get("call_id") or payload.get("id") or f"call-{line_number}")
-            tool_name = str(payload.get("name") or response_type)
-            input_value: Any = ""
-            for key in ("arguments", "input", "action", "query", "search_query", "prompt"):
-                if payload.get(key) is not None:
-                    input_value = payload[key]
-                    break
-            call = {
-                "tool_name": tool_name,
-                "call_id": call_id,
-                "input_text": input_value,
-                "output_text": "",
-            }
-            turn["pending_calls"][call_id] = call
-            turn["tool_evidence"].append(call)
-            call_to_turn[call_id] = target_turn_id
-        elif is_output:
-            call_id = str(payload.get("call_id") or payload.get("id") or "")
-            call = turn["pending_calls"].get(call_id)
-            if call is None:
-                call = {
-                    "tool_name": "tool",
-                    "call_id": call_id or f"call-{line_number}",
-                    "input_text": "",
-                    "output_text": "",
-                }
-                turn["tool_evidence"].append(call)
-            output = payload.get("output")
-            if output is None:
-                output = payload.get("content") or ""
-            call["output_text"] = output
-
-    records: list[dict[str, Any]] = []
-    for turn_id in order:
-        turn = turns[turn_id]
-        occurred_at = turn["occurred_at"]
-        if occurred_at is None or not (start <= occurred_at < end):
-            continue
-        records.append({
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-            "occurred_at": occurred_at,
-            "cwd": turn.get("cwd") or cwd,
-            "user_text": turn["user_text"],
-            "result_text": turn["result_text"],
-            "tool_evidence": turn["tool_evidence"],
-        })
-    return records
+    from .session_parser import SessionParser
+    parser = SessionParser(timezone)
+    with path.open("rb") as handle:
+        for line in handle:
+            if not line.endswith(b"\n"):
+                break
+            parser.feed(line.decode("utf-8", errors="replace"))
+            if parser.excluded:
+                break
+    return parser.records(start, end)
 
 
 def record_score(record: dict[str, Any]) -> tuple[int, int, int]:
@@ -477,14 +355,32 @@ def build_model_context(records: list[dict[str, Any]], profile: dict[str, Any]) 
             "user_excerpt": hit_centered_excerpt(str(record.get("user_text") or ""), needles),
             "result_excerpt": hit_centered_excerpt(str(record.get("result_text") or ""), needles),
             "tool_excerpts": tools,
+            "associated_evidence_refs": record.get("associated_evidence_refs", []),
         })
     return sorted(context, key=lambda item: (item["priority"], item["occurred_at"], item["evidence_ref"]))
 
 
 def classify_record(record: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     user_text = record.get("user_text", "")
-    combined = "\n".join((user_text, record.get("result_text", "")))
-    source_kind = "automation" if user_text.startswith("Automation:") else "session"
+    result_text = record.get("result_text", "")
+    # Storage acknowledgements are not the intent of the underlying DBA work.
+    result_scope = re.sub(r"[，,；;]?\s*(?:已记录到|已保存到|任务状态同步)[^。；\n]*", "", result_text)
+    combined = "\n".join((user_text, result_scope))
+    metadata = record.get("session_metadata") or {}
+    from .session_parser import is_guardian
+    source_kind = "automation" if metadata.get("thread_source") == "automation" or user_text.startswith("Automation:") else "session"
+    child = bool(metadata.get("parent_thread_id")) or isinstance(metadata.get("source"), dict) and "subagent" in metadata["source"]
+    structured_dbc = bool(
+        re.search(r"\bDBC\b", result_scope)
+        and re.search(r"actionable\s*\d+|可行动\s*\d+", result_scope, re.I)
+        and re.search(r"批次\s*\d+/\d+\s*done", result_scope, re.I)
+        and re.search(r"关注\s*\d+\s*实例|pmm\d*:(?:mysql|oracle|redis):", result_scope, re.I)
+    )
+    inspection_delivery = bool(
+        (structured_dbc or re.search(r"巡检|核查", result_scope) and re.search(r"报告|结论|风险汇总|异常清单", result_scope))
+        and re.search(r"\d+\s*(?:个|台|份|次)|实例[：: ]\s*\S+|范围[：: ]\s*\S+", result_scope)
+        and not re.search(r"尚未|未完成|未生成|没有.*(?:报告|结论)", result_scope)
+    )
     include_marker_prefix_chars = int(profile.get("include_marker_prefix_chars") or 120)
     marker_prefix = user_text.lstrip()[:include_marker_prefix_chars]
     marker_suffix = user_text.rstrip()[-include_marker_prefix_chars:]
@@ -497,6 +393,17 @@ def classify_record(record: dict[str, Any], profile: dict[str, Any]) -> dict[str
             (marker for marker in profile_list(profile, "include_tail_markers") if marker and marker in marker_suffix),
             "",
         )
+        # A standalone recording instruction is user intent even when the
+        # attached work summary mentions report preparation. Restrict this
+        # fallback to complete lines near the request boundaries; a proposal
+        # or a negated instruction is not authorization to record work.
+        request = user_text.strip()
+        if not include_marker and any(
+            match.start() < include_marker_prefix_chars
+            or match.end() > len(request) - include_marker_prefix_chars
+            for match in EXPLICIT_RECORD_REQUEST_RE.finditer(request)
+        ):
+            include_marker = 'explicit_record_request'
     scope_override_max_chars = int(profile.get("scope_override_max_chars") or 500)
     scope_pattern = match_pattern(
         DEFAULT_SCOPE_OVERRIDE_PATTERNS + profile_list(profile, "scope_override_patterns"),
@@ -510,7 +417,10 @@ def classify_record(record: dict[str, Any], profile: dict[str, Any]) -> dict[str
         and bool(scope_marker)
     )
     work_cwd = match_pattern(profile_list(profile, "work_cwd_patterns"), record.get("cwd", ""))
-    work_keyword = next((word for word in profile_list(profile, "work_keywords") if word and word.lower() in combined.lower()), "")
+    work_keyword = next((word for word in profile_list(profile, "work_keywords") if word and (
+        re.search(r"(?<![A-Za-z0-9_])" + re.escape(word) + r"(?![A-Za-z0-9_])", combined, re.I)
+        if re.fullmatch(r"[A-Za-z0-9_ ]+", word) else word.lower() in combined.lower()
+    )), "")
     report_pattern = match_pattern(profile_list(profile, "report_maintenance_patterns"), combined)
     exclude_pattern = match_pattern(profile_list(profile, "exclude_turn_patterns"), combined)
     exclude_cwd = match_pattern(profile_list(profile, "exclude_cwd_patterns"), record.get("cwd", ""))
@@ -525,14 +435,20 @@ def classify_record(record: dict[str, Any], profile: dict[str, Any]) -> dict[str
         candidate_reason = "work_cwd"
 
     excluded_reason = ""
-    if not scope_override and not include_marker:
-        if source_kind == "automation":
+    if is_guardian(metadata) or user_text.startswith("The following is the Codex agent history whose request action you are assessing."):
+        excluded_reason = "internal_approval"
+    elif child:
+        excluded_reason = "associated_subtask"
+    elif not scope_override and not include_marker:
+        if source_kind == "automation" and re.search(r"\$codex-daily-report|reportctl\.py|生成(?:日报|周报|月报|绩效)", user_text):
+            excluded_reason = "report_generation"
+        elif source_kind == "automation" and not (work_cwd and work_keyword and inspection_delivery):
             excluded_reason = "automation_source"
-        elif report_pattern:
+        elif report_pattern and not (source_kind == "automation" and inspection_delivery):
             excluded_reason = f"report_maintenance_pattern:{report_pattern}"
         elif exclude_cwd:
             excluded_reason = f"exclude_cwd_pattern:{exclude_cwd}"
-        elif exclude_pattern:
+        elif exclude_pattern and not (source_kind == "automation" and inspection_delivery and exclude_pattern.startswith("DBC")):
             excluded_reason = f"exclude_turn_pattern:{exclude_pattern}"
         elif scope_pattern and len(user_text.strip()) > scope_override_max_chars:
             excluded_reason = "long_text_scope_phrase_not_override"
@@ -560,27 +476,43 @@ def classify_record(record: dict[str, Any], profile: dict[str, Any]) -> dict[str
         "source_kind": source_kind,
         "candidate_reason": candidate_reason,
         "excluded_reason": excluded_reason,
+        "session_metadata": metadata,
     }
 
 
-def collect_evidence(report_date: str, timezone_name: str, codex_home: Path, profile: dict[str, Any]) -> dict[str, Any]:
+def collect_evidence(report_date: str, timezone_name: str, codex_home: Path, profile: dict[str, Any], *, rebuild_index=False, thread_id=None, turn_id=None) -> dict[str, Any]:
     report_day = date.fromisoformat(report_date)
     timezone = ZoneInfo(timezone_name)
     start = datetime.combine(report_day, time.min, tzinfo=timezone)
     end = datetime.combine(report_day + timedelta(days=1), time.min, tzinfo=timezone)
     deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
-    for path in iter_session_files(codex_home):
-        for record in scan_session_file(path, start, end, timezone):
-            key = (record["thread_id"], record["turn_id"])
-            deduplicated[key] = merge_duplicate(deduplicated[key], record) if key in deduplicated else record
+    from .session_index import indexed_records
+    if bool(thread_id) != bool(turn_id):
+        raise ValueError("thread_id and turn_id must be supplied together")
+    paths = iter_session_files(codex_home)
+    raw_records, metrics = indexed_records(paths, Path(profile["output_root"]) / ".cache" / "report-index.sqlite3", start, end, timezone, rebuild_index)
+    for record in raw_records:
+        key = (record["thread_id"], record["turn_id"])
+        deduplicated[key] = merge_duplicate(deduplicated[key], record) if key in deduplicated else record
     records = [classify_record(record, profile) for record in deduplicated.values()]
     records.extend(collect_manual_records(report_day, timezone, profile))
     records.sort(key=lambda item: (item["occurred_at"], item["id"]))
     records = apply_scope_overrides(records)
+    for record in records:
+        children = [child["id"] for child in records if child.get("excluded_reason") == "associated_subtask" and (child.get("session_metadata") or {}).get("parent_thread_id") == record["thread_id"]]
+        if children:
+            record["associated_evidence_refs"] = children
+    if thread_id:
+        selected = [record for record in records if record["thread_id"] == thread_id and record["turn_id"] == turn_id]
+        if not selected:
+            raise ValueError("Requested thread/turn is not available on this report date")
+        refs = {ref for record in selected for ref in record.get("associated_evidence_refs", [])}
+        records = selected + [record for record in records if record["id"] in refs]
     return {
         "version": 1,
         "report_date": report_date,
         "timezone": timezone_name,
         "records": records,
         "model_context": build_model_context(records, profile),
+        "collection_metrics": metrics,
     }

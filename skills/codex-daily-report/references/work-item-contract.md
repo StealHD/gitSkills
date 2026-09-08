@@ -1,6 +1,6 @@
 # WorkItem Contract
 
-仅在日报 evidence 已生成后读取本文件。模型的输出必须是一个 JSON 对象，不得同时撰写 Markdown。
+仅在日报 evidence 已生成后读取本文件。模型的输出必须是 WorkItem 或日级修订 JSON，不得同时撰写 Markdown。日级修订接口见 daily-revisions.md。
 
 ## EvidenceBundle
 
@@ -53,6 +53,8 @@
 
 所有必填文本字段必须是字符串；除 `follow_up` 可为空字符串外，`id/object_key/category/objective/outcome/status/submitted_text` 不得为空。`evidence_refs` 必须是非空字符串列表，`key_facts` 必须是 `name/value/source_ref` 均非空的对象列表，`supporting_actions` 必须是非空字符串元素组成的列表。类型错误或空必填字段会返回 `invalid_work_item_field`。
 
+`follow_up` 仅在证据存在明确后续动作时填写，用于记录事项的下一步动作，包括当天或短时间内即可闭环的动作；它不直接等于周报的“下周重点工作”。应以行动词开头，采用“行动目标 + 对象或范围 + 验收结果”的单句结构，通常 35–100 个中文字符。不得写成当前状态、等待条件、原始 SQL/DDL 命令或多个无关对象的检查清单；技术验证步骤要转换为复制位点、补充日志状态、同步可用性、报告、清单或复核结论等可验收结果。周报聚合时还必须通过 `references/prompt.md` 规定的跨周必要性筛选。
+
 类别使用稳定英文键，例如：`slow_sql`、`fault`、`inspection`、`archive_assessment`、`capacity`、`sync`、`permission`、`backup_recovery`、`technical_research`。
 
 `weekly_group`、`priority_signals` 和 `weekly_text` 是向后兼容的周报字段：历史 `legacy_submitted` 可缺省，新生成的有效事项应提供。`weekly_group` 只能是 `performance_incident`、`data_governance`、`monitoring_platform`、`capacity_cost`、`other_priority`；`priority_signals` 只能从 `leadership_attention`、`financial_impact`、`permission_security`、`production_risk`、`cross_team_blocker`、`routine` 中选择。分类和优先级口径以 `weekly-summary-format.md` 为准。
@@ -61,13 +63,15 @@
 
 1. 先按时间处理用户范围指令；最新的句首显式 `只保留/不要这条/今天只做了这个` 覆盖自动推断。技术描述中的“改写 SQL 时只保留 status 条件”不是范围指令。非空命名 hint 找不到 record 时不得回退到最近一条或排除全部，指令标记为 `unresolved_scope_override`，校验器拒绝继续生成。被纠偏排除的旧 record 会保留审计内容，但写入 `scope_override_excluded`，校验器会再次执行同一规则，旧 WorkItem 不能绕过。
 2. `source_kind=manual_report` 的手工条目与显式 `日报记录` 同级，优先于工作目录或关键词候选；两者均应完整保留，除非有更新的明确范围纠偏。
-3. 自动候选必须同时命中 profile 的个人工作目录与工作关键词；仅有技术关键词、项目代码审查、技能开发或自动化执行记录不足以证明是用户的工作日报事项。
+3. 自动候选必须同时命中 profile 的个人工作目录与工作关键词；仅有技术关键词、项目代码审查、技能开发或与工作无关的自动化执行记录不足以证明是用户的工作日报事项。形成巡检报告、风险汇总、异常清单或明确核查结论的周期巡检是有效工作产物，不得按普通自动化噪声排除。
 4. 自动化 prompt 中的 `不要/只保留` 不属于用户范围纠偏。
-5. `excluded_reason` 非空的记录不得成为 WorkItem，除非它本身是更新的显式范围纠偏。
+5. `excluded_reason` 非空的记录不得独立成为 WorkItem。associated_subtask 只可与 associated_evidence_refs 指向它的同对象主记录共同引用，内部审批始终不可用。
 6. 归并键是 `object_key + objective`。同一事项的环境切换、参数确认、证据收集只能放入 `supporting_actions`。
 7. 不同对象各自成项；不得借用另一 turn 的表名、行数、SQL、执行计划或指标。
-8. 所有有效事项都保留在 JSON；`submitted_text` 供日报从中选最高价值的 1–4 项。没有有效事项时保留空 `items`，不得用历史事项、例行自动化或无关技术会话凑数。
+8. 所有有效事项都保留在 JSON；`submitted_text` 供日报从中选最高价值的 1–4 项。专项事项为空时，允许从当天 Evidence 选择 1–2 项真实日常 DBA/运维工作作为兜底；完全没有当天证据时保留空 `items`，不得用历史事项、岗位职责模板或无关技术会话凑数。
 9. 手工条目允许做保守扩写，但扩写只能说明原动作直接蕴含的目的、价值与推进状态。没有明确完成词时状态使用 `in_progress`，不得从“配合、获取、联调、推进”等词推断已完成、已上线、已修复或已验证。
+   - `in_progress` 不妨碍领导版报告当周已真实开展的工作切片。等保、审计、跨部门取数或工单协作有明确动作证据时，可以写“已配合开展……”并说明本次协作内容，但不能写成整个事项已完成，也不能附加“持续推进”过程尾句。
+10. 日常任务兜底必须有具体对象或范围、已执行动作及可核查结果。合格证据包括实例或批次范围、巡检时间窗口、成功/失败数量、报告产物、风险分布、异常清单、备份/同步状态或权限核查结论。仅有“日常巡检”“查看告警”“检查备份”等泛化职责不生成 WorkItem。日常事项设置 `priority_signals=["routine"]`，并按主目标选择正常的 `weekly_group`，不得统一塞入 `other_priority`。
 
 ## 事实与状态
 
@@ -78,13 +82,16 @@
 - 已完成分析并反馈开发使用 `handed_off`，不得写成仍未处理。
 - `resolved`、`verified_normal`、`analysis_complete`、`handed_off` 的 `submitted_text` 必须落在已完成结果上；“建议改为/建议继续/建议后续”等未执行动作只能写入 `follow_up`，不得作为日报或周报事项的收尾。
 - 健康核查无异常使用 `verified_normal`，不得使用“修复/恢复”措辞。
+- WorkItem 状态按本事项的交付目标判断，不按底层风险是否彻底消失判断。周期巡检形成报告、范围和结论时可以单独成项；全量成功或无异常使用 `verified_normal`，发现风险但已完成巡检与报告分析时使用 `analysis_complete`。只有巡检窗口、证据采集或报告本身尚未完成时才使用 `in_progress`；已完成分析并交付责任方使用 `handed_off`。
 - 归档、迁移或清理方案评估使用 `analysis_complete`；写明边界和风险，不得暗示已执行。
-- 未知根因使用 `in_progress` 或 `blocked`，并在 `follow_up` 指明缺失证据或责任方。
+- 未知根因不自动等于本次工作未完成：若目标是故障定位且尚未形成定位结论，使用 `in_progress` 或 `blocked`；若目标是巡检或风险报告且已形成可核查结果，使用 `analysis_complete`，将进一步定位动作写入 `follow_up`。
 - 若 ORA 错误、配置和时间条件已能支持具体根因，应写具体根因，不得退化为泛化“待继续验证”。
 
 `submitted_text` 必须是中文日报提交口径，单项最多 220 个字符，不含会话、工具、自动化维护、个人待办、未脱敏 secret，或 macOS/Linux/Windows 本地绝对路径。`weekly_text` 执行相同的 secret 与路径门禁。
 
-`weekly_text` 面向领导周报，不能只是扩写 `submitted_text`。它应保留对象与范围、1–3 个关键事实或指标、根因或结论、已完成动作或交付物、价值和当前状态，优先写成 2–3 个短句；不得加入证据中不存在的数字、金额、对象或结论。数字必须完整出现在某一个与事项对象明确关联的 `evidence_ref` 中，或来自绑定到该 ref 且单位语义一致的 `key_fact`，例如 `duration_seconds=2255` 可写为“2255 秒”；不得把一个 ref 的数字与另一个 ref 的单位拼接。周报聚合会对最终入选事项执行细节门禁；只写“数据库相关工作”“推进优化”“输出结果”等泛化对象或动作时停止生成，不输出空泛稿。
+领导版表达统一读取 [prompt.md](prompt.md)；日报、日级修订、周报和发送前使用同一检查。`daily_text` 也执行 submitted_text 的事实、数字、敏感信息与长度校验。
+
+`weekly_text` 面向领导周报，不能只是扩写 `submitted_text`。它应保留对象与范围、1–3 个关键事实或指标、根因或结论、已完成动作或交付物、价值和结论边界，优先写成 2–3 个短句；不得加入证据中不存在的数字、金额、对象或结论。数字必须完整出现在某一个与事项对象明确关联的 `evidence_ref` 中，或来自绑定到该 ref 且单位语义一致的 `key_fact`，例如 `duration_seconds=2255` 可写为“2255 秒”；不得把一个 ref 的数字与另一个 ref 的单位拼接。周报聚合会对最终入选事项执行细节门禁；只写“数据库相关工作”“推进优化”“输出结果”等泛化对象或动作时停止生成，不输出空泛稿。
 
 ## Run-state 完整性与历史升级
 
@@ -92,3 +99,12 @@
 
 - 结构化日报和 `no_reportable_items`：使用原始 evidence、items 与 profile 重新执行 `reportctl.py finalize`。共享校验通过后会原子写入两个 canonical hash，并保留已有发送/通知去重历史。
 - `legacy_submitted`：重新执行 `reportctl.py import-legacy --month YYYY-MM --profile /absolute/path/report-profile.local.json`。只有 state 为 `legacy_submitted`，且现有 Evidence 的全部 record 与 WorkItem 的全部 item 都标记 `source_kind=legacy_submitted` 时，命令才会从原月度 Markdown 重建三件套并写入哈希；结构化旧 sidecar 会返回迁移错误，必须走 `finalize`。
+
+## 稳定事项与兼容快照
+
+- WorkItem 可选 `daily_text` 只控制日报文字，`daily_hidden` 必须为布尔值；不改变周期汇总使用的 submitted_text/weekly_text。
+- WorkItemBundle 可选 `display_order` 是全部事项 ID 的无重复排列；显示时跳过 daily_hidden 后取前四项。run-state 保存 displayed_item_ids，供自然语言编号修订定位。
+- 首次保存保留事项 ID，重跑按已有 ID 或相同 object_key/objective 匹配；事实未变化时保留已确认文字。`record` 与 `finalize` 均保留候选遗漏的已验证事项、来源证据与既有顺序；遗漏或空候选不是删除授权。删除误记工作必须使用有明确用户来源的 `daily-revise fact remove`，修订在合并后应用，旧候选不能复活已删除项。追加新事项使用 record，不重写全天事项。
+- 日级修订侧车按完整 canonical JSON 哈希绑定到 run-state.revisions_hash；任意篡改或丢失均阻止后续读取。侧车、有效 Evidence、WorkItem 和报告同事务提交。
+- 新保存记录使用 validation_policy_version=2。旧已验证数据仍检查原有来源、事实和内容哈希，不因为表达规则升级修改历史稿；新产物按现行表达检查，内部审批证据不得复用。
+- 失败写入独立 attempt，保持原正式 state 与报告有效。不得让 collect 先覆盖正式 Evidence；使用返回的 staging 路径。

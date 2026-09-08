@@ -76,15 +76,15 @@ notes = "Patch release synchronized from the deployed maintenance version."
 [skills."codex-daily-report"]
 path = "skills/codex-daily-report"
 maintenance_path = "/Users/stealmac/.codex/skills/codex-daily-report"
-version = "0.1.1"
-status = "published"
+version = "0.4.0"
+status = "local"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "codex-daily-report/v0.3.0"
-notes = "Unreleased local-maintenance sync adding the unified evidence and WorkItem pipeline, guarded report finalization, aggregation, and performance reporting."
+release_tag = "codex-daily-report/v0.4.0"
+notes = "Sourced daily revisions, incremental desktop collection, and preservation of explicitly recorded work across regeneration."
 
 [skills."dbc-skill"]
 path = "skills/dbc-skill"

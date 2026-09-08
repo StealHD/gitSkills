@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import (
     claim_supported_by_key_fact,
     grounding_value_present,
+    leadership_narrative_issues,
     material_weekly_claims,
 )
 from .rendering import sanitize_weekly_text
@@ -50,6 +51,27 @@ STATUS_ORDER = {
 }
 MAX_WEEKLY_ITEMS = 6
 MAX_WEEKLY_PLANS = 3
+WEEKLY_PLAN_ACTION_PREFIX = re.compile(
+    r"^(?:完成|推进|开展|复核|验证|优化|落实|协调|整理|输出|补齐|制定|形成|跟踪|持续开展|持续推进)"
+)
+RAW_TECHNICAL_PLAN_PATTERN = re.compile(
+    r"\b(?:SHOW|SELECT|ALTER|UPDATE|DELETE|INSERT|CREATE|DROP)\b|"
+    r"\bDBA_[A-Z0-9_]+\b|ALL\s+COLUMN(?:S|\s+LOGGING)?|\bALWAYS\b",
+    re.I,
+)
+DEPENDENCY_FIRST_PLAN_PATTERN = re.compile(
+    r"^(?:等待|待|由|补齐[^，。；]{0,24}后|[^，。；]{1,24}完成后)"
+)
+IMMEDIATE_CLOSURE_PLAN_PATTERN = re.compile(
+    r"权限(?:补齐|授予|开通|验证)|连接(?:重建|重连)|位点初始化|"
+    r"补充日志(?:配置|验证)|日志组状态|执行(?:一次)?\s*(?:DDL|SQL)|"
+    r"运行一次|重跑|复测一次|查询状态",
+    re.I,
+)
+CROSS_WEEK_PLAN_PATTERN = re.compile(
+    r"下周|持续|周期|趋势|观察|治理|整改|改造|迁移|分阶段|"
+    r"变更窗口|跨团队|跨部门|长期|专项|周报|周检|风险处置清单"
+)
 
 CATEGORY_GROUPS = {
     "slow_sql": "performance_incident",
@@ -192,6 +214,13 @@ def _validate_revision_metadata(revision: dict[str, Any], report_week: str) -> N
             raise WeeklyRevisionError(
                 "Weekly revision source requires thread_id, turn_id, occurred_at, and user_text"
             )
+        try:
+            from datetime import datetime
+            timestamp = datetime.fromisoformat(source["occurred_at"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                raise ValueError("Missing timezone")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise WeeklyRevisionError("Weekly revision source timestamp must include timezone") from exc
 
 
 def merge_weekly_revisions(
@@ -361,6 +390,8 @@ def management_priority(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
 def has_specific_weekly_scope(text: str) -> bool:
     if SPECIFIC_CHINESE_SCOPE_PATTERN.search(text):
         return True
+    if re.search(r"\b(?:SPID|session_id)\s*[:：=]?\s*\d+\b", text, re.I):
+        return True
     if VAGUE_SCOPE_PATTERN.search(text):
         return False
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{1,}", text):
@@ -384,12 +415,22 @@ def validate_weekly_item_detail(item: dict[str, Any]) -> list[dict[str, str]]:
         missing.append("足够的具体内容")
     if not has_specific_weekly_scope(text):
         missing.append("明确对象或工作范围")
-    if not re.search(r"完成|处理|排查|分析|核查|评估|调整|修正|恢复|反馈|交付|形成|验证|部署", text):
+    if not re.search(r"完成|处理|排查|分析|核查|核对|清理|删除|评估|调整|修正|恢复|反馈|交付|形成|验证|部署", text):
         missing.append("已完成动作")
     if not re.search(r"\d|确认|定位|明确|根因|结论|风险|正常|异常|清单|方案|边界|结果|核对|方向|用途|规格|费用", text, re.I):
         missing.append("关键事实或结论")
     if not re.search(r"已|完成|当前|等待|尚未|后续|风险|降低|降至|提升|减少|移除|恢复|提供|形成|交付|反馈|正常|可用", text):
         missing.append("价值或当前状态")
+    narrative_labels = {
+        "internal_status": "领导口径而非内部状态标签",
+        "embedded_follow_up": "以已完成成果收尾而非下一步待办",
+        "conditional_future": "已交付结果而非条件式未来动作",
+        "disguised_future": "当前分析结论而非伪完成式后续动作",
+        "open_progress": "具体阶段成果而非持续推进状态",
+        "unframed_evidence_limit": "将证据限制表达为结论边界",
+    }
+    for issue_code, _ in leadership_narrative_issues(text):
+        missing.append(narrative_labels[issue_code])
     if not missing:
         return []
     return [{
@@ -397,6 +438,12 @@ def validate_weekly_item_detail(item: dict[str, Any]) -> list[dict[str, str]]:
         "message": "Weekly item lacks: " + "、".join(dict.fromkeys(missing)),
         "item_id": str(item.get("id") or ""),
     }]
+
+
+def is_cross_week_plan(plan: str) -> bool:
+    text = str(plan or "").strip()
+    # An unclassified next action is not evidence of a next-week commitment.
+    return bool(CROSS_WEEK_PLAN_PATTERN.search(text))
 
 
 def validate_weekly_plan_detail(plan: str) -> list[dict[str, str]]:
@@ -410,6 +457,14 @@ def validate_weekly_plan_detail(plan: str) -> list[dict[str, str]]:
         normalized,
     ):
         missing.append("具体目标和范围")
+    if len(normalized) > 110:
+        missing.append("简洁的单一管理目标")
+    if not WEEKLY_PLAN_ACTION_PREFIX.search(text) or DEPENDENCY_FIRST_PLAN_PATTERN.search(text):
+        missing.append("以行动目标开头")
+    if RAW_TECHNICAL_PLAN_PATTERN.search(text):
+        missing.append("管理与验收口径而非原始命令")
+    if not is_cross_week_plan(text):
+        missing.append("跨周必要性")
     if not has_specific_weekly_scope(text):
         missing.append("明确对象或工作范围")
     if not re.search(r"复核|验证|推进|完成|开展|执行|整理|明确|确认|优化|调整|跟踪|观察|对比|形成|输出|交付|安排", text):
@@ -585,6 +640,16 @@ def apply_weekly_revision(
                 raise WeeklyRevisionError("Weekly revision replacement requires text")
             if "\n" in text or "\r" in text:
                 raise WeeklyRevisionError("Weekly revision item text must be one line")
+            # A later sourced daily fact correction supersedes older weekly prose,
+            # while preserving the user's category and priority choices.
+            corrected_at = target.get("fact_revision_at")
+            if corrected_at:
+                from datetime import datetime
+                revision_time = next((source.get("occurred_at") for source in revision.get("sources", []) if source.get("id") == source_ref), None)
+                if source_ref != target.get("fact_revision_ref") and (
+                    not revision_time or datetime.fromisoformat(revision_time.replace("Z", "+00:00")) < datetime.fromisoformat(corrected_at.replace("Z", "+00:00"))
+                ):
+                    text = weekly_item_text(target)
             object_override = validate_revision_object_change(text, source_ref, target)
             validate_revision_claims(text, source_ref, target)
             target["_weekly_text"] = text
@@ -687,7 +752,7 @@ def _follow_up_plans(items: list[dict[str, Any]]) -> list[str]:
     eligible = [item for item in items if classify_weekly_group(item)]
     for item in sorted(eligible, key=management_priority):
         follow_up = str(item.get("follow_up") or "").strip().rstrip("。")
-        if follow_up and follow_up not in plans:
+        if follow_up and is_cross_week_plan(follow_up) and follow_up not in plans:
             plans.append(follow_up)
     return plans[:MAX_WEEKLY_PLANS]
 

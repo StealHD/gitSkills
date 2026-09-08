@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from contextlib import ExitStack
 import json
 import os
 import re
@@ -247,6 +248,10 @@ def send_report(
     opener=urllib.request.urlopen,
 ) -> dict:
     send_content = content
+    if notification_kind == "report":
+        findings = validate_submitted_text(content, {}, "daily")
+        if findings:
+            raise WeComSendError("Report validation failed: " + ", ".join(finding["code"] for finding in findings))
     if notification_kind in {"failure", "empty"}:
         send_content = validate_fixed_notification_content(content, notification_kind, report_date)
     normalized_url = normalize_webhook_url(webhook_url)
@@ -265,7 +270,18 @@ def send_report(
         raise WeComSendError("Validated daily reports require a run-state file.")
 
     run_state_path = run_state_path.expanduser()
-    with locked_run_state(run_state_path):
+    with ExitStack() as locks:
+        notification_history = None
+        history_hashes = []
+        if notification_kind == "failure" and run_state_path.name == "attempt.json" and run_state_path.parent.parent.name == report_date:
+            notification_history = run_state_path.parent.parent / "failure-notifications.json"
+            locks.enter_context(locked_run_state(notification_history))
+            if notification_history.exists():
+                history = json.loads(notification_history.read_text())
+                history_hashes = history.get("hashes", [])
+                if history.get("report_date") != report_date or not isinstance(history_hashes, list) or not all(isinstance(value, str) for value in history_hashes):
+                    raise WeComSendError("Invalid failure notification history")
+        locks.enter_context(locked_run_state(run_state_path))
         if notification_kind == "empty":
             state, sent_hashes = load_empty_notification_state(run_state_path, report_date)
             if digest in sent_hashes:
@@ -279,14 +295,21 @@ def send_report(
             return {"sent": True, "skipped": False, "content_hash": digest, "response": result}
         if notification_kind == "failure":
             state, sent_hashes = load_failure_notification_state(run_state_path, report_date)
-            if digest in sent_hashes:
+            if digest in sent_hashes or digest in history_hashes:
                 return {"sent": False, "skipped": True, "content_hash": digest, "reason": "already_sent"}
             result = post_wecom(send_content, normalized_url, msgtype, opener)
             sent_at = datetime.now(timezone.utc).isoformat()
             state["failure_notification_sent_at"] = sent_at
             state["sent_at"] = sent_at
             state["failure_notification_hashes"] = [*sent_hashes, digest]
-            atomic_write_json(run_state_path, state)
+            if notification_history is not None:
+                from reporting.common import atomic_write_batch
+                atomic_write_batch({
+                    run_state_path: (json.dumps(state, ensure_ascii=False, indent=2) + "\n").encode(),
+                    notification_history: (json.dumps({"report_date": report_date, "hashes": [*history_hashes, digest]}) + "\n").encode(),
+                })
+            else:
+                atomic_write_json(run_state_path, state)
             return {"sent": True, "skipped": False, "content_hash": digest, "response": result}
         state, sent_hashes = load_validated_send_state(run_state_path, digest, report_date)
         if digest in sent_hashes:

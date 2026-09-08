@@ -37,3 +37,9 @@ chmod 600 /absolute/path/wecom-webhook.local.txt
 - `codex-run-state-YYYY-MM-DD.json`
 
 安装后先运行单元测试和 shadow-run；shadow-run 禁止发送企业微信。
+
+## 本地缓存与运行目录
+
+`<output_root>/.cache/report-index.sqlite3` 保存脱敏的增量解析状态，属于可重建缓存，不是事实权威。`collect --rebuild-index` 重建索引；不更改已保存日报。文件本身仅当前用户读写。
+
+候选和失败记录位于 `<output_root>/.runs/日期/运行ID/`。采集、校验失败不能覆盖正式月目录中的证据和状态。日级修订使用月份目录中的 `codex-daily-overrides-日期.json`，不手工编辑。

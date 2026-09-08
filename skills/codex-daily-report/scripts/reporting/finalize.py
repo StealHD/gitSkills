@@ -5,265 +5,165 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
-from .common import atomic_write_batch, canonical_json_hash
-from .contracts import validate_bundles
+from .common import atomic_write_batch, canonical_json_hash, redact_value
+from .contracts import validate_bundles, validate_submitted_text, validate_evidence_schema
+from .daily import (DailyRevisionError, apply_ledger, displayed_items, load_daily,
+                    merge_evidence, paths_for, prepare_revision, stable_items)
 from .locking import locked_run_state
 from .rendering import remove_daily, render_daily, replace_or_append_daily
 
 
 def json_bytes(value: Any) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
 
 
-def load_existing_state(path: Path) -> dict[str, Any]:
+def load_existing_state(path: Path) -> dict:
     if not path.exists():
         return {}
+    value = json.loads(path.read_text())
+    return value if isinstance(value, dict) else {}
+
+
+def preserve_delivery_history(state, old_state, *, preserve_sent_at):
+    for field in ('sent_hashes','empty_notification_hashes','failure_notification_hashes'):
+        state[field] = old_state.get(field, [])
+    for field in ('empty_notification_sent_at','failure_notification_sent_at'):
+        if field in old_state:
+            state[field] = old_state[field]
+    if preserve_sent_at and 'sent_at' in old_state:
+        state['sent_at'] = old_state['sent_at']
+
+
+def same_markdown_content(left, right):
+    return [x.rstrip() for x in left.splitlines() if x.strip()] == [x.rstrip() for x in right.splitlines() if x.strip()]
+
+
+def save_attempt(report_date, evidence, items, profile, errors):
+    paths = paths_for(report_date, profile)
+    run_dir = Path(profile['output_root']).expanduser() / '.runs' / report_date / uuid4().hex
+    path = run_dir / 'attempt.json'
+    state = {'version': 1, 'report_date': report_date, 'report_type': 'daily',
+             'content_hash': '', 'evidence_hash': canonical_json_hash(evidence),
+             'work_items_hash': canonical_json_hash(items), 'send_state': 'validation_failed',
+             'sent_hashes': [], 'validation_errors': errors,
+             'validated_at': datetime.now(timezone.utc).isoformat()}
+    atomic_write_batch({path: json_bytes(state), run_dir / 'evidence.json': json_bytes(redact_value(evidence)),
+                        run_dir / 'items.json': json_bytes(redact_value(items))})
+    previous = {}
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return state if isinstance(state, dict) else {}
+        snapshot = load_daily(report_date, profile)
+        if snapshot:
+            previous = {'run_state': str(paths['state'])}
+            daily_path = paths['state'].parent / f'codex-daily-submit-{report_date}.md'
+            if daily_path.exists():
+                previous['daily'] = str(daily_path)
+    except (ValueError, OSError):
+        pass
+    return 2, {'status': 'validation_failed', 'output_files': {'attempt': str(path), 'run_state': str(path)},
+               'previous_valid_report': previous, 'send_ready': False, 'content_hash': '', 'validation_errors': errors}
 
 
-def preserve_delivery_history(
-    state: dict[str, Any],
-    old_state: dict[str, Any],
-    *,
-    preserve_sent_at: bool,
-) -> None:
-    for field in ("empty_notification_hashes", "failure_notification_hashes"):
-        value = old_state.get(field)
-        state[field] = value if isinstance(value, list) else []
-    for field in ("empty_notification_sent_at", "failure_notification_sent_at"):
-        value = old_state.get(field)
-        if isinstance(value, str) and value:
-            state[field] = value
-    sent_at = old_state.get("sent_at")
-    if preserve_sent_at and isinstance(sent_at, str) and sent_at:
-        state["sent_at"] = sent_at
+def finalize_daily(report_date, evidence, work_items, profile, *, mode='finalize', revision=None):
+    # Same lock order for all writers: month, then date. The sender takes only date.
+    paths = paths_for(report_date, profile)
+    month_lock = paths['state'].parent / 'month-transaction'
+    with locked_run_state(month_lock), locked_run_state(paths['state']):
+        try:
+            return _finalize_daily(report_date, evidence, work_items, profile, mode, revision)
+        except (DailyRevisionError, ValueError, TypeError, KeyError) as exc:
+            return save_attempt(report_date, evidence, work_items, profile,
+                [{'code': 'invalid_daily_input', 'message': str(exc)}])
+        except OSError as exc:
+            errors = [{'code': 'daily_persistence_failed', 'message': str(exc)}]
+            try:
+                return save_attempt(report_date, evidence, work_items, profile, errors)
+            except OSError:
+                return 2, {'status': 'persistence_failed', 'output_files': {}, 'send_ready': False,
+                           'content_hash': '', 'validation_errors': errors}
 
 
-def same_markdown_content(left: str, right: str) -> bool:
-    """Compare report content while preserving harmless historical blank lines."""
-    return (
-        [line.rstrip() for line in left.splitlines() if line.strip()]
-        == [line.rstrip() for line in right.splitlines() if line.strip()]
-    )
-
-
-def finalize_daily(
-    report_date: str,
-    evidence: Any,
-    work_items: Any,
-    profile: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:
-    errors = validate_bundles("daily", report_date, evidence, work_items, profile)
-    evidence_hash = canonical_json_hash(evidence)
-    work_items_hash = canonical_json_hash(work_items)
-    evidence_bundle = evidence if isinstance(evidence, dict) else {}
-    work_items_bundle = work_items if isinstance(work_items, dict) else {}
-    items = work_items_bundle.get("items")
-    no_reportable_items = isinstance(items, list) and not items
-    if no_reportable_items:
-        errors = [
-            finding
-            for finding in errors
-            if finding.get("code") not in {"no_work_items", "daily_item_count"}
-        ]
-
-    output_root = Path(str(profile.get("output_root") or ".")).expanduser()
-    month = report_date[:7]
-    month_dir = output_root / month
-    daily_path = month_dir / f"codex-daily-submit-{report_date}.md"
-    monthly_path = month_dir / f"codex-daily-submit-{month}.md"
-    items_path = month_dir / f"codex-work-items-{report_date}.json"
-    state_path = month_dir / f"codex-run-state-{report_date}.json"
-    records = (
-        evidence_bundle.get("records", [])
-        if isinstance(evidence_bundle.get("records"), list)
-        else []
-    )
-    exclusion_counts = Counter(
-        str(record.get("excluded_reason"))
-        for record in records
-        if isinstance(record, dict) and record.get("excluded_reason")
-    )
-    candidate_count = sum(
-        1
-        for record in records
-        if isinstance(record, dict)
-        and not record.get("excluded_reason")
-        and record.get("candidate_reason") != "unclassified"
-    )
-    model_context_count = (
-        len(evidence_bundle.get("model_context", []))
-        if isinstance(evidence_bundle.get("model_context"), list)
-        else candidate_count
-    )
-    validated_item_count = len(items) if isinstance(items, list) else 0
-
+def _finalize_daily(report_date, evidence, work_items, profile, mode, revision):
+    paths = paths_for(report_date, profile)
+    snapshot = load_daily(report_date, profile)
+    old_evidence, previous, old_state, ledger = snapshot or (None, None, {}, None)
+    if mode == 'revise':
+        if not snapshot:
+            raise DailyRevisionError('Create a validated daily snapshot before revising it')
+        evidence, work_items, ledger = prepare_revision(report_date, old_evidence, previous, ledger, revision)
+    else:
+        if not isinstance(evidence, dict) or not isinstance(work_items, dict):
+            raise DailyRevisionError('Evidence and WorkItems must be JSON objects')
+        if evidence.get('report_date') != report_date or work_items.get('report_date') != report_date:
+            raise DailyRevisionError('Evidence and WorkItems must match the requested date')
+        if not isinstance(evidence.get('records'), list):
+            raise DailyRevisionError('EvidenceBundle.records must be a list')
+        input_errors = validate_evidence_schema(evidence, report_date, evidence['records'])
+        if input_errors:
+            return save_attempt(report_date, evidence, work_items, profile, input_errors)
+        # A generated candidate is not authorization to delete saved work.
+        # Both record and finalize preserve the validated day; sourced removal
+        # revisions are applied afterwards and remain authoritative on reruns.
+        if old_evidence:
+            evidence = merge_evidence(old_evidence, evidence)
+        work_items = stable_items(work_items, previous, append=True)
+        evidence, work_items = apply_ledger(evidence, work_items, ledger)
+    errors = validate_bundles('daily', report_date, evidence, work_items, profile)
+    if not work_items.get('items'):
+        errors = [e for e in errors if e['code'] not in {'no_work_items','daily_item_count'}]
     if errors:
-        with locked_run_state(state_path):
-            old_state = load_existing_state(state_path)
-            sent_hashes = (
-                old_state.get("sent_hashes", [])
-                if isinstance(old_state.get("sent_hashes"), list)
-                else []
-            )
-            state = {
-                "version": 1,
-                "report_date": report_date,
-                "report_type": "daily",
-                "content_hash": "",
-                "evidence_hash": evidence_hash,
-                "work_items_hash": work_items_hash,
-                "validated_at": datetime.now(timezone.utc).isoformat(),
-                "send_state": "validation_failed",
-                "sent_hashes": sent_hashes,
-                "validation_errors": errors,
-                "metrics": {
-                    "record_count": len(records),
-                    "candidate_count": candidate_count,
-                    "model_context_count": model_context_count,
-                    "excluded_count": sum(exclusion_counts.values()),
-                    "exclusion_reasons": dict(sorted(exclusion_counts.items())),
-                    "validated_item_count": validated_item_count,
-                },
-            }
-            preserve_delivery_history(state, old_state, preserve_sent_at=True)
-            atomic_write_batch({state_path: json_bytes(state)})
-        return 2, {
-            "status": "validation_failed",
-            "output_files": {"run_state": str(state_path)},
-            "send_ready": False,
-            "content_hash": "",
-            "validation_errors": errors,
-        }
-
-    if no_reportable_items:
-        with locked_run_state(state_path):
-            old_state = load_existing_state(state_path)
-            sent_hashes = (
-                old_state.get("sent_hashes", [])
-                if isinstance(old_state.get("sent_hashes"), list)
-                else []
-            )
-            state = {
-                "version": 1,
-                "report_date": report_date,
-                "report_type": "daily",
-                "content_hash": "",
-                "evidence_hash": evidence_hash,
-                "work_items_hash": work_items_hash,
-                "validated_at": datetime.now(timezone.utc).isoformat(),
-                "send_state": "no_reportable_items",
-                "sent_hashes": sent_hashes,
-                "validation_errors": [],
-                "metrics": {
-                    "record_count": len(records),
-                    "candidate_count": 0,
-                    "model_context_count": model_context_count,
-                    "excluded_count": sum(exclusion_counts.values()),
-                    "exclusion_reasons": dict(sorted(exclusion_counts.items())),
-                    "validated_item_count": 0,
-                },
-            }
-            preserve_delivery_history(state, old_state, preserve_sent_at=True)
-            files = {
-                items_path: json_bytes(work_items_bundle),
-                state_path: json_bytes(state),
-            }
-            if monthly_path.exists():
-                files[monthly_path] = remove_daily(
-                    monthly_path.read_text(encoding="utf-8"),
-                    report_date,
-                ).encode("utf-8")
-            atomic_write_batch(files, delete_paths=[daily_path])
-        return 0, {
-            "status": "no_reportable_items",
-            "output_files": {"work_items": str(items_path), "run_state": str(state_path)},
-            "send_ready": False,
-            "content_hash": "",
-            "validation_errors": [],
-        }
-
-    daily_text = render_daily(report_date, work_items_bundle)
-    content_hash = hashlib.sha256(daily_text.encode("utf-8")).hexdigest()
-    send_enabled = bool((profile.get("send_policy") or {}).get("daily", True))
-    outputs = {
-        "daily": str(daily_path),
-        "monthly_root": str(monthly_path),
-        "work_items": str(items_path),
-        "run_state": str(state_path),
-    }
-    with locked_run_state(state_path):
-        old_state = load_existing_state(state_path)
-        sent_hashes = (
-            old_state.get("sent_hashes", [])
-            if isinstance(old_state.get("sent_hashes"), list)
-            else []
-        )
-        existing_month = monthly_path.read_text(encoding="utf-8") if monthly_path.exists() else ""
-        rendered_month = replace_or_append_daily(existing_month, report_date, daily_text)
-        monthly_text = (
-            existing_month
-            if existing_month and same_markdown_content(existing_month, rendered_month)
-            else rendered_month
-        )
-        same_validated_content = (
-            old_state.get("content_hash") == content_hash
-            and old_state.get("evidence_hash") == evidence_hash
-            and old_state.get("work_items_hash") == work_items_hash
-            and old_state.get("validation_errors") == []
-        )
-        state = {
-            "version": 1,
-            "report_date": report_date,
-            "report_type": "daily",
-            "content_hash": content_hash,
-            "evidence_hash": evidence_hash,
-            "work_items_hash": work_items_hash,
-            "validated_at": (
-                old_state.get("validated_at")
-                if same_validated_content and old_state.get("validated_at")
-                else datetime.now(timezone.utc).isoformat()
-            ),
-            "send_state": (
-                "sent"
-                if content_hash in sent_hashes
-                else ("pending" if send_enabled else "disabled")
-            ),
-            "sent_hashes": sent_hashes,
-            "validation_errors": [],
-            "metrics": {
-                "record_count": len(records),
-                "candidate_count": candidate_count,
-                "model_context_count": model_context_count,
-                "excluded_count": sum(exclusion_counts.values()),
-                "exclusion_reasons": dict(sorted(exclusion_counts.items())),
-                "validated_item_count": validated_item_count,
-            },
-        }
-        preserve_delivery_history(
-            state,
-            old_state,
-            preserve_sent_at=content_hash in sent_hashes,
-        )
-        files = {
-            items_path: json_bytes(work_items_bundle),
-            state_path: json_bytes(state),
-        }
-        if not daily_path.exists() or daily_path.read_bytes() != daily_text.encode("utf-8"):
-            files[daily_path] = daily_text.encode("utf-8")
-        if not monthly_path.exists() or monthly_path.read_bytes() != monthly_text.encode("utf-8"):
-            files[monthly_path] = monthly_text.encode("utf-8")
-        atomic_write_batch(files)
-    return 0, {
-        "status": "ok",
-        "output_files": outputs,
-        "send_ready": send_enabled and content_hash not in sent_hashes,
-        "content_hash": content_hash,
-        "validation_errors": [],
-    }
+        return save_attempt(report_date, evidence, work_items, profile, errors)
+    shown = displayed_items(work_items)
+    no_report = not shown
+    daily_text = render_daily(report_date, work_items) if shown else ''
+    if shown:
+        errors.extend(validate_submitted_text(daily_text, profile, 'daily'))
+    if errors:
+        return save_attempt(report_date, evidence, work_items, profile, errors)
+    records = evidence['records']
+    exclusions = Counter(r['excluded_reason'] for r in records if r.get('excluded_reason'))
+    candidate_count = sum(not r.get('excluded_reason') and r.get('candidate_reason') != 'unclassified' for r in records)
+    content_hash = hashlib.sha256(daily_text.encode()).hexdigest() if shown else ''
+    send_enabled = bool((profile.get('send_policy') or {}).get('daily', True))
+    state = {'version': 1, 'validation_policy_version': 2, 'report_date': report_date, 'report_type': 'daily',
+        'content_hash': content_hash, 'evidence_hash': canonical_json_hash(evidence),
+        'work_items_hash': canonical_json_hash(work_items), 'validation_errors': [],
+        'validated_at': datetime.now(timezone.utc).isoformat(),
+        'send_state': ('no_reportable_items' if no_report else 'sent' if content_hash in old_state.get('sent_hashes', [])
+                       else 'pending' if send_enabled else 'disabled'),
+        'displayed_item_ids': [item['id'] for item in shown],
+        'metrics': {'record_count': len(records), 'candidate_count': candidate_count,
+                    'model_context_count': len(evidence.get('model_context', [])),
+                    'excluded_count': sum(exclusions.values()), 'exclusion_reasons': dict(exclusions),
+                    'validated_item_count': len(work_items['items']),
+                    'collection': evidence.get('collection_metrics', {})}}
+    if ledger is not None:
+        state['revisions_hash'] = canonical_json_hash(ledger)
+    preserve_delivery_history(state, old_state, preserve_sent_at=content_hash in old_state.get('sent_hashes', []))
+    if all(state.get(k) == old_state.get(k) for k in ('content_hash','evidence_hash','work_items_hash','revisions_hash')):
+        state['validated_at'] = old_state.get('validated_at', state['validated_at'])
+    daily_path = paths['state'].parent / f'codex-daily-submit-{report_date}.md'
+    monthly_path = paths['state'].parent / f'codex-daily-submit-{report_date[:7]}.md'
+    monthly = monthly_path.read_text() if monthly_path.exists() else ''
+    files = {paths['evidence']: json_bytes(evidence), paths['items']: json_bytes(work_items), paths['state']: json_bytes(state)}
+    if ledger is not None:
+        files[paths['revisions']] = json_bytes(ledger)
+    if shown:
+        files[daily_path] = daily_text.encode()
+        updated = replace_or_append_daily(monthly, report_date, daily_text)
+        files[monthly_path] = (monthly if same_markdown_content(monthly, updated) else updated).encode()
+    elif monthly_path.exists():
+        files[monthly_path] = remove_daily(monthly, report_date).encode()
+    atomic_write_batch(files, delete_paths=[daily_path] if no_report else ())
+    outputs = {key: str(paths[key]) for key in ('evidence','items','state')}
+    outputs['work_items'] = outputs.pop('items')
+    outputs['run_state'] = outputs.pop('state')
+    if shown:
+        outputs.update(daily=str(daily_path), monthly_root=str(monthly_path))
+    if ledger is not None:
+        outputs['revisions'] = str(paths['revisions'])
+    return 0, {'status': 'no_reportable_items' if no_report else 'ok', 'output_files': outputs,
+               'send_ready': mode == 'finalize' and bool(shown) and send_enabled and content_hash not in state['sent_hashes'],
+               'content_hash': content_hash, 'validation_errors': [], 'displayed_item_ids': state['displayed_item_ids']}

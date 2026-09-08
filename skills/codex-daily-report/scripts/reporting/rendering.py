@@ -21,9 +21,10 @@ def sanitize_weekly_text(text: str) -> str:
 
 
 def render_daily(report_date: str, work_items: dict[str, Any]) -> str:
+    from .daily import displayed_items
     lines = [f"# {report_date} 日报", ""]
-    for index, item in enumerate(work_items.get("items", [])[:4], 1):
-        lines.append(f"{index}. {str(item['submitted_text']).strip()}")
+    for index, item in enumerate(displayed_items(work_items), 1):
+        lines.append(f"{index}. {str(item.get('daily_text', item['submitted_text'])).strip()}")
     return "\n".join(lines).rstrip() + "\n"
 
 

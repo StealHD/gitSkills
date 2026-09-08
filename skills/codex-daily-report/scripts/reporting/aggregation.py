@@ -239,19 +239,29 @@ def load_validated_items(
                 evidence,
                 work_items,
             )
+            revision_path = month_dir / f"codex-daily-overrides-{report_date}.json"
+            state_metadata = day_state if isinstance(day_state, dict) else {}
+            if revision_path.exists() or state_metadata.get("revisions_hash"):
+                try:
+                    revision = load_json(revision_path)
+                    if canonical_json_hash(revision) != state_metadata.get("revisions_hash"):
+                        raise ValueError("Revision ledger differs from validated state")
+                except (OSError, ValueError) as exc:
+                    state_errors.append({"code": "revision_hash_mismatch", "message": str(exc)})
             for finding in state_errors:
                 errors.append({**finding, "report_date": report_date})
 
             raw_items = work_items.get("items") if isinstance(work_items, dict) else None
             no_reportable = isinstance(day_state, dict) and day_state.get("send_state") == "no_reportable_items"
-            if no_reportable and (not isinstance(raw_items, list) or raw_items):
+            from .daily import displayed_items
+            if no_reportable and (not isinstance(raw_items, list) or displayed_items(work_items)):
                 errors.append({
                     "code": "no_reportable_items_not_empty",
                     "message": f"No-reportable run-state requires an empty WorkItem bundle for {report_date}.",
                     "report_date": report_date,
                 })
 
-            day_errors = validate_bundles("daily", report_date, evidence, work_items, profile)
+            day_errors = validate_bundles("daily" if state_metadata.get("validation_policy_version") == 2 else "source", report_date, evidence, work_items, profile)
             if no_reportable and isinstance(raw_items, list) and not raw_items:
                 day_errors = [
                     finding
@@ -262,7 +272,7 @@ def load_validated_items(
                 errors.append({**finding, "report_date": report_date})
 
             if not state_errors and not day_errors:
-                if no_reportable:
+                if no_reportable and not raw_items:
                     cursor += timedelta(days=1)
                     continue
                 for item in raw_items or []:
@@ -671,6 +681,17 @@ def replace_or_append_weekly_root(existing: str, report_day: date, weekly_text: 
 
 
 def aggregate_report(report_type: str, report_date: str, profile: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from contextlib import ExitStack
+    from .locking import locked_run_state
+    start, end = scope_bounds(report_type, date.fromisoformat(report_date))
+    months = sorted({f"{start:%Y-%m}", f"{end:%Y-%m}"})
+    with ExitStack() as locks:
+        for month in months:
+            locks.enter_context(locked_run_state(Path(profile['output_root']) / month / 'month-transaction'))
+        return _aggregate_report(report_type, report_date, profile)
+
+
+def _aggregate_report(report_type: str, report_date: str, profile: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     report_day = date.fromisoformat(report_date)
     items, errors = load_validated_items(report_type, report_day, profile)
     if errors:
