@@ -75,7 +75,8 @@ Use evidence from the main skill's classification:
 - Confirmed server failure: `服务端当前有问题`, identifying a partner server when that is what failed.
 - Rate/concurrency limit: `下载限流`.
 - Browser control failure: `浏览器控制暂不可用`.
-- Challenge/login wall: `需要完成验证／登录`.
+- Unresolved challenge after permitted UI interaction, or user-only login: `需要协助完成验证／登录`;
+  state the remaining control/action. Seeing a checkbox alone is not a failure or handoff condition.
 - Deadline or uncertain cause: `等待超时` / `当前访问失败`.
 - Validation mismatch or insufficient evidence: `文件校验失败` / `完整性未确认`.
 

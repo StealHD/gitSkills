@@ -3,6 +3,12 @@
 Read only for actual selected downloads, their progress/verification, final naming or packaging.
 A user selection may use keys, titles or an unambiguous contextual group.
 
+Use the browser priority in browser-stability.md. Before the final click, confirm the selected
+surface can bind a download record/event to a local file and report completion. If it cannot,
+use an available Chrome integration that can, respecting any required user session. If neither
+provides this evidence, stop before starting a transfer and report the missing capability.
+Below, "browser" means the selected transfer surface; DOM/native access is chosen by capability.
+
 ## Queue and Identity
 
 Build an ordered queue of selected results. Keep exactly one active task transfer. Never start,
@@ -10,21 +16,21 @@ prefetch or resolve a later item while the current item transfers. Reuse the sel
 entry; the preference for a waitlist applies only before a working route has been selected.
 
 For each item retain: book/result identity, record and successful entry, original filename,
-Chrome download record identity or observed row/source/start time, partial/final paths, expected
+Browser download record identity or observed row/source/start time, partial/final paths, expected
 format, trustworthy expected MD5/exact byte count when available, last observed size/progress time,
 whether an explicit failure occurred, whether the one recovery allowance is used, and terminal state.
 Use exact metadata, not rounded "5.1 MB", as an expected byte count.
 
-Before clicking, inventory relevant files and the current Chrome downloads. Bind the subsequent
+Before clicking, inventory relevant files and the current browser downloads. Bind the subsequent
 download row and newly created/changed file to this item using source, time and filename together.
 Do not treat a historical same-name file as success. If identity is ambiguous, stop with
 `下载文件对应关系未确认` rather than guessing or clicking again. Previously verified completed items
 from this task are reusable; they do not need another transfer.
 
 A matching partial alone does not prove an active transfer. Compare two size/mtime samples about
-15 seconds apart and Chrome state. A stable partial beside this item's verified final file is an
+15 seconds apart and browser state. A stable partial beside this item's verified final file is an
 orphan: record and ignore it, without deleting it. A partial without a verified completed item must
-be reconciled with Chrome; it is neither completion nor permission to advance.
+be reconciled with the browser; it is neither completion nor permission to advance.
 
 ## Entry and Initial Click
 
@@ -40,7 +46,7 @@ an unconfirmed start. No parallel tabs, curl downloads or concurrent download-ma
 
 ## Progress and One Recovery
 
-Routine monitoring samples the current file every 30 seconds. Read Chrome only for a stalled file,
+Routine monitoring samples the current file every 30 seconds. Read the browser only for a stalled file,
 a missing partial, completion confirmation or a necessary control action. Avoid repeated screenshots
 and full accessibility trees while bytes increase. Give concise updates during long waits.
 
@@ -51,12 +57,12 @@ with a restarted file. Retain the old observation solely to recognize a restart.
 | --- | --- |
 | Bytes continue growing | Monitor; elapsed entry-wait time is irrelevant |
 | First explicit transfer failure | Record the event and cool down 60 seconds, checking in intervals no longer than 30 seconds |
-| User/Chrome has resumed during cooldown | Mark recovery allowance used and monitor; no agent click |
+| User/browser has resumed during cooldown | Mark recovery allowance used and monitor; no agent click |
 | Still failed after cooldown, recovery unused | Choose exactly one recovery below and mark the allowance used before acting |
 | Resumed transfer starts from zero | Treat it as the permitted fresh attempt; update current byte baseline; do not count zero itself as another failure |
 | A new explicit failure after recovery | Stop the entire batch; no further clicks, alternate routes or next book |
 | Same old failure remains visible during cooldown | Same event, not a second failure |
-| No byte progress for 180 seconds | Inspect Chrome once; if neither completed nor resumed, stop automatic monitoring and pause the batch |
+| No byte progress for 180 seconds | Inspect browser once; if neither completed nor resumed, stop automatic monitoring and pause the batch |
 
 For an unused recovery allowance, choose the first available action, then stop choosing:
 1. Click a safe `继续` / `恢复` / `Resume` once.
@@ -69,21 +75,21 @@ A failed resume cannot be followed by a sibling click. If recovery restarts from
 keep monitoring it. Observe recovery for at least 30 seconds unless completion or explicit failure
 arrives earlier; `继续下载中` or pause/cancel controls alone show acceptance, not byte progress.
 
-Explicit failures include Chrome reporting failure, a transfer-associated 429/5xx, or an IP limit.
+Explicit failures include the browser reporting failure, a transfer-associated 429/5xx, or an IP limit.
 A stall, expired old link, unchanged historical error or unavailable control is not a new transfer
 failure. An unobservable recovery/control outcome pauses the batch rather than causing more clicks.
 
 The 180-second no-progress clock starts at transfer creation and resets only on actual current-file
 growth, except a confirmed recovery starts one new observation window. It cannot be reset by reads,
 route changes or repeated old errors. If the final check shows a new explicit failure, apply the
-failure branch; if still merely stalled, report `已暂停自动监控` and Chrome's observed state.
-Stopping automation does not cancel a possibly active Chrome/user transfer; say if it may still run.
+failure branch; if still merely stalled, report `已暂停自动监控` and the browser's observed state.
+Stopping automation does not cancel a possibly active browser/user transfer; say if it may still run.
 Preserve partials and completed files. Resume a stopped batch only on a new explicit user request.
 
 ## Completion and Integrity
 
 Advance only when ALL are established:
-- The bound Chrome download record reports completed.
+- The bound browser download record/event reports completed.
 - Its corresponding final file is non-empty, stable across two samples about 15 seconds apart,
   and has the expected actual format, not just the expected filename extension.
 - Every available trustworthy expected MD5 and exact byte count matches.

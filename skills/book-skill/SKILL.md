@@ -1,6 +1,6 @@
 ---
 name: book-skill
-description: Use when a user asks Codex to find one or multiple ebooks, compare editions or formats, return Anna's Archive metadata and clickable final download URLs by default, or download a user-selected entry through Chrome.
+description: Use when a user asks to find ebooks, compare editions or formats, obtain Anna's Archive metadata and final download links, or download selected results through a browser.
 ---
 
 # Book Skill
@@ -32,10 +32,16 @@ Use `complete_links` for bare titles, `compare` for explicit edition comparisons
 `record_only` only when the user asks to omit link resolution, `download_selected` for actual
 downloads, and `non_anna` only for explicit non-Anna requests.
 
-Keep one task state across books and follow-ups: parsed books and stable result keys, working host,
-visited URL/access-mode pairs, successful result metadata and entry, recovery budgets, and completed
-items. Reuse successful work. A new book, route, tool call or context compaction does not reset budgets.
-Do not carry access status into unrelated tasks.
+Keep compact state across books and follow-ups; update changed fields instead of replaying snapshots:
+- Task: mode, ordered book keys/constraints, working host, visited host/access pairs, browser/session
+  and tab handles, recovery budgets, current stage and next action.
+- Result: key, bibliographic metadata, language/format/size, record, route label, successful entry,
+  final action and untried sibling, extraction time/evidence, completion status.
+- Pending entry: first-navigation time, deadline, next inspection, retry used and last failure class.
+
+Reuse successful work. New books, tool calls and compaction never reset budgets. Keep state in task
+context or a private host-supported checkpoint outside the skill package, without cookies or
+credentials. Do not carry access status into unrelated tasks. Transfer fields live in the download reference.
 
 ```text
 parse -> host/search -> select record(s) -> resolve final actions -> render
@@ -55,17 +61,25 @@ genuinely ambiguous.
 
 ## Host and Search
 
-Read [browser-stability.md](references/browser-stability.md) before host discovery or browser
-recovery. That reference owns host limits, public discovery and control-surface recovery.
+Read [browser-stability.md](references/browser-stability.md) before the first browser action.
+It owns Browser-first routing, scoped extraction, interactive verification, host discovery and
+bounded recovery. On a verification page, inspect and operate the visible controls before
+classifying it as blocked or changing hosts; follow its **Interactive Verification** section.
 
 Use the first book's real exact search to verify Anna identity and search results, including a
 valid empty result. Reuse that search and the working host for subsequent books.
 Only host/search access failure can initiate domain discovery; record/entry failure stays local.
+An unresolved CAPTCHA alone does not initiate domain discovery.
 
 For each book:
 
-1. Search once with ISBN, otherwise title plus known author, otherwise title.
-2. Extract the best 3–5 candidate blocks; do not open every record or enumerate every page link.
+1. Search once with ISBN, otherwise title plus known author, otherwise title. Apply requested or
+   inferred language and explicit format using observed UI/documented filters when available;
+   batch filter settings before submission. Do not guess filter parameters. Without an explicit
+   format, keep fallback formats eligible; retain bilingual editions containing the target language.
+2. Extract at most 3–5 strongest candidate blocks with metadata and record URLs in one scoped read.
+   Do not open every record or enumerate every page link. Check language against edition/title
+   text as catalogue labels can be wrong.
 3. If no suitable format appears, allow one refinement search: explicit format, otherwise EPUB.
 4. Rank by exact ISBN/work identity, requested language, requested format or default preference,
    provenance, then edition completeness. Explicit language/format constraints are eligibility
@@ -87,11 +101,16 @@ resolve final actions for shown choices unless record-only was requested.
    reapplying this preference when the user later requests its download.
 3. Open entries sequentially in one reusable entry tab. Each entry has a 120-second deadline from
    first navigation in this resolution episode, including challenge waits and retries. Inspect
-   initially, then no more often than every 30 seconds. One scoped extraction/control retry is
-   allowed within that deadline; it never restarts the clock.
-4. A protected ordinary request can move to Chrome once within the same entry budget. Never bypass
-   verification. At timeout or definite failure, try the alternate once under its own 120-second
-   deadline. If it also fails, stop resolving that result; do not rediscover hosts.
+   initially; with a visible countdown, schedule the next read for completion, capped by the deadline.
+   For passive waiting without a countdown, inspect at intervals of at least 30 seconds, with a
+   final deadline read. Interactive verification uses the browser reference's action/feedback
+   loop immediately, within this same deadline. Split long waits for progress updates without
+   extra page reads. One scoped extraction/control retry is allowed; it never restarts the clock.
+4. Surface changes follow the browser reference within the same entry budget. Complete supported
+   verification through its normal UI; never bypass it. If verification remains unresolved,
+   preserve the tab for user assistance. For a non-verification timeout or definite route failure,
+   try the alternate once under its own 120-second deadline. If it also fails, stop resolving that
+   result; do not rediscover hosts.
 5. Extract an HTTPS final action from its visible action group. Retain the successful entry,
    record and untried HTTPS sibling where present. An HTTP-only entry can use the alternate;
    do not weaken Chrome protections. Never click a final action while preparing results.
@@ -112,7 +131,8 @@ Use observed evidence, not a single catch-all service diagnosis:
 | Explicit remote 5xx or server error page | Service failure; local or host recovery according to the failing layer |
 | 429 or same-IP concurrency message | Rate/concurrency limit, not proof that Anna itself is down |
 | Browser control/session unavailable | Control failure; bounded surface recovery |
-| CAPTCHA, login or verification wall | Verification required; do not bypass |
+| Visible verification checkbox or visual CAPTCHA | Inspect and complete normal UI verification within the browser reference's limits |
+| Unresolved verification or user-only login | Preserve the current tab and explain the specific assistance needed; do not rotate hosts |
 | Deadline reached or network cause unknown | Wait timeout / access failure; do not assert a server cause |
 | Loaded search without eligible records | No match / no requested format; continue other books |
 | File checksum/structure mismatch | File validation failure; actual-download workflow stops without redownloading |

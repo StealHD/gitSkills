@@ -15,6 +15,7 @@ Each skill lives in its own directory under `skills/`. The repository root is re
 +-- .github/
 |   +-- workflows/
 +-- skills/
+    +-- book-skill/
     +-- codex-daily-report/
     +-- dbc-skill/
     +-- init-pro/
@@ -25,6 +26,20 @@ Each skill lives in its own directory under `skills/`. The repository root is re
 Do not put generated reports, local configs, webhook URLs, tokens, or user-specific IDs in skill source directories.
 
 ## Available Skills
+
+### book-skill
+
+`book-skill` finds ebooks on Anna’s Archive, compares editions and formats, resolves visible download links, and downloads selected files through supported browser tools when requested.
+
+It preserves a four-column search table, handles supported verification through the normal UI within bounded time, and verifies completed files before delivery. A compatible agent, model, browser tools, and working network are required; installing the skill alone does not provide them.
+
+- [Detailed Chinese setup and usage guide](docs/book-skill-guide.md)
+- [Online guide](https://doc.senmora.top:38483/docs/book-skill/)
+- [v0.2.5 release](https://github.com/StealHD/gitSkills/releases/tag/book-skill/v0.2.5)
+
+```text
+Use $skill-installer to install https://github.com/StealHD/gitSkills/tree/main/skills/book-skill
+```
 
 ### codex-daily-report
 

@@ -126,15 +126,15 @@ notes = "Hardens schema-v3 path identity, compact WORKLOG validation, crash reco
 [skills."book-skill"]
 path = "skills/book-skill"
 maintenance_path = "/Users/stealmac/.codex/skills/book-skill"
-version = "0.2.4"
+version = "0.2.5"
 status = "published"
 public = true
 package_formats = [
   "tar.gz",
   "zip",
 ]
-release_tag = "book-skill/v0.2.4"
-notes = "Unifies single-attempt download recovery, bounds host discovery and queue waits, verifies completed files, preserves partial results, and loads transfer guidance only when needed."
+release_tag = "book-skill/v0.2.5"
+notes = "Improves bounded normal-UI verification and browser recovery, preserves search and download output contracts, and documents setup, models, networking, and validated limitations."
 
 [skills."tmdb-movie-discovery"]
 path = "skills/tmdb-movie-discovery"
