@@ -33,7 +33,7 @@ Do not put generated reports, local configs, webhook URLs, tokens, or user-speci
 
 It preserves a four-column search table, handles supported verification through the normal UI within bounded time, and verifies completed files before delivery. A compatible agent, model, browser tools, and working network are required; installing the skill alone does not provide them.
 
-- [Detailed Chinese setup and usage guide](docs/book-skill-guide.md)
+- [Chinese quick-start guide](docs/book-skill-guide.md)
 - [Online guide](https://doc.senmora.top:38483/docs/book-skill/)
 - [v0.2.5 release](https://github.com/StealHD/gitSkills/releases/tag/book-skill/v0.2.5)
 
