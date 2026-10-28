@@ -154,6 +154,10 @@ book-skill/
 
 ## 搜索结果的固定输出格式
 
+![本次小王子搜索实测：未下载文件，按四列表格提供 EPUB 和 MOBI 两种格式](https://raw.githubusercontent.com/StealHD/gitSkills/main/docs/assets/book-skill/search-results.png)
+
+图 1：本次会话的真实搜书结果。已找到 1 本，提供 EPUB 与 MOBI 两种格式；此时未下载文件。[查看原图](https://raw.githubusercontent.com/StealHD/gitSkills/main/docs/assets/book-skill/search-results.png)。
+
 一本书和多本书都使用四列；每种格式独占一行。下面是排版示意，不是新的搜索结果，操作文字没有附带可用下载链接：
 
 已找到 1 本。
@@ -233,6 +237,10 @@ book-skill/
 Anna 访问失败不会自动授权改用其他书源。需要其他来源时，明确提出来源或允许范围。
 
 ## 本版本验证范围
+
+![本次小王子下载复测：完成验证与控制恢复后下载成功，MD5 和 EPUB 结构校验通过](https://raw.githubusercontent.com/StealHD/gitSkills/main/docs/assets/book-skill/download-retest.png)
+
+图 2：本次下载复测的真实记录。截图中的 5.46 秒仅为文件传输耗时，不含搜书、验证和控制恢复。这是测试时的调试说明；日常单文件下载仍按前文的一句话格式回复。[查看原图](https://raw.githubusercontent.com/StealHD/gitSkills/main/docs/assets/book-skill/download-retest.png)。
 
 2026-10-28 在 macOS、Codex、Chrome 的组合下测试过《小王子》中文 EPUB 的搜索、正常界面验证、下载与文件校验，得到 3,132,124 字节的 EPUB，MD5 为 `170172589d849f2b94be3f9aa78cc770`。另测试过仅搜索、列出 EPUB 与 MOBI 选项而不点击最终下载动作。
 
